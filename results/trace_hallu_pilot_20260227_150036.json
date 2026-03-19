@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "timestamp_utc": "20260227_150036",
+    "input_csv": "methods/01_adathink/results/per_sample_Qwen3_8B_20260227_140410.csv",
+    "train_size": 160,
+    "test_size": 40,
+    "lambda_cost": 0.15,
+    "best_threshold": 0.0
+  },
+  "detector_test": {
+    "precision": 0.475,
+    "recall": 1.0,
+    "f1": 0.6440677966101694,
+    "tp": 19,
+    "fp": 21,
+    "fn": 0
+  },
+  "policy_test": {
+    "accuracy": 0.525,
+    "avg_tokens": 43.25,
+    "utility": 0.49965820312500003
+  },
+  "baselines_test": {
+    "fixed64": {
+      "accuracy": 0.35,
+      "avg_tokens": 21.25,
+      "utility": 0.337548828125
+    },
+    "fixed128": {
+      "accuracy": 0.4,
+      "avg_tokens": 31.875,
+      "utility": 0.3813232421875
+    },
+    "fixed256": {
+      "accuracy": 0.525,
+      "avg_tokens": 43.25,
+      "utility": 0.49965820312500003
+    }
+  }
+}

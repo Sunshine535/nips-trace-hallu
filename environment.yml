@@ -1,0 +1,32 @@
+name: nips_trace_hallu
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pytorch>=2.5
+  - pytorch-cuda=12.4
+  - torchvision
+  - torchaudio
+  - faiss-cpu
+  - numpy
+  - pandas
+  - scikit-learn
+  - scipy
+  - nltk
+  - spacy
+  - pip:
+      - transformers>=4.47
+      - datasets>=3.0
+      - accelerate>=1.1
+      - sentence-transformers
+      - rank-bm25
+      - evaluate
+      - bert-score
+      - rouge-score
+      - wandb
+      - hydra-core
+      - openai
