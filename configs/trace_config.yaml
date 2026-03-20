@@ -1,0 +1,56 @@
+generator:
+  model: "Qwen/Qwen3.5-27B"
+  max_length: 2048
+  temperature: 0.7
+  top_p: 0.9
+  num_traces_per_question: 5
+  batch_size: 4
+
+detector:
+  hidden_size: 3584  # Qwen3.5-27B hidden dim
+  num_layers_to_probe: [16, 20, 24, 28, 32]
+  learning_rate: 1.0e-3
+  weight_decay: 0.01
+  num_epochs: 10
+  batch_size: 64
+  train_ratio: 0.8
+  threshold: 0.5
+
+intervention:
+  model: "Qwen/Qwen3.5-27B"
+  num_actions: 5
+  actions: ["continue", "truncate", "backtrack", "retrieve", "restart"]
+  grpo_config:
+    num_train_epochs: 3
+    per_device_train_batch_size: 2
+    gradient_accumulation_steps: 8
+    learning_rate: 1.0e-5
+    warmup_ratio: 0.1
+    bf16: true
+    num_generations: 4
+    max_prompt_length: 1024
+    max_completion_length: 512
+  backtrack_window: 3
+  max_interventions_per_trace: 5
+
+datasets:
+  truthfulqa:
+    name: "truthful_qa"
+    config: "generation"
+    split: "validation"
+  halueval:
+    name: "pminervini/HaluEval"
+    config: "qa_samples"
+    split: "data"
+
+eval:
+  num_samples: 500
+  temperature: 0.0
+  max_new_tokens: 1024
+  batch_size: 4
+
+output:
+  traces_dir: "./data/traces"
+  detector_dir: "./checkpoints/detector"
+  policy_dir: "./checkpoints/intervention_policy"
+  results_dir: "./results"
