@@ -1,0 +1,24 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+transformers==5.3.0
+accelerate==1.13.0
+datasets>=3.0
+sentence-transformers
+rank-bm25
+evaluate
+bert-score
+rouge-score
+wandb
+hydra-core
+openai
+numpy
+pandas
+scikit-learn
+scipy
+nltk
+spacy
+faiss-cpu
+huggingface_hub
