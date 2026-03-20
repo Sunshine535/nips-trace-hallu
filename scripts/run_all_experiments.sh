@@ -2,17 +2,17 @@
 # ============================================================================
 # CHI (Causal Hallucination Intervention) — Full Experiment Pipeline
 # collect_traces → train_detector → train_policy → eval → ablations → figures
-# Hardware: 8x A100-80GB, Model: Qwen/Qwen3.5-9B
+# Hardware: 4–8× A100-80GB (auto-detected)
+# Model: Qwen/Qwen3.5-9B
 # ============================================================================
 set -euo pipefail
 
-export HF_ENDPOINT="https://hf-mirror.com"
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NCCL_P2P_DISABLE=0
-export NCCL_IB_DISABLE=0
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=gpu_utils.sh
+source "${SCRIPT_DIR}/gpu_utils.sh"
+auto_setup
+
 CONFIG="${PROJECT_DIR}/configs/trace_config.yaml"
 
 TRACES_DIR="${PROJECT_DIR}/data/traces"
@@ -30,6 +30,12 @@ DATASETS="truthfulqa halueval faithdial"
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(timestamp)] $1"; }
 
+log "========================================="
+log " CHI Experiment Pipeline"
+log " Model: ${MODEL_NAME}"
+log " GPUs:  ${NUM_GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})"
+log "========================================="
+
 # ============================================================================
 # Stage 1: Collect Annotated Traces (HDF5 + JSONL)
 # ============================================================================
@@ -46,7 +52,7 @@ else
         --datasets $DATASETS \
         --output_dir "$TRACES_DIR" \
         --layer_indices $LAYER_INDICES \
-        --batch_size 4 \
+        --batch_size "$(auto_batch_size 9 4)" \
         --num_traces_per_question 3 \
         --temperature 0.7 \
         2>&1 | tee "${LOG_DIR}/stage1_collect_traces.log"
@@ -142,7 +148,6 @@ log "========================================="
 log "[Stage 5/6] Ablation studies"
 log "========================================="
 
-# Ablation: detection threshold sweep
 for THRESHOLD in 0.3 0.4 0.5 0.6 0.7; do
     ABLATION_TAG="threshold_${THRESHOLD}"
     ABLATION_OUT="${RESULTS_DIR}/ablation_${ABLATION_TAG}.json"
@@ -165,7 +170,6 @@ for THRESHOLD in 0.3 0.4 0.5 0.6 0.7; do
     mv "${RESULTS_DIR}/chi_evaluation.json" "$ABLATION_OUT" 2>/dev/null || true
 done
 
-# Ablation: per-layer detector comparison
 for LAYER in $LAYER_INDICES; do
     ABLATION_TAG="single_layer_${LAYER}"
     ABLATION_OUT="${RESULTS_DIR}/ablation_${ABLATION_TAG}.json"
