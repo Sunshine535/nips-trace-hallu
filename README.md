@@ -1,102 +1,163 @@
-# TRACE-Hallu: Causal Trajectory Auditing and Intervention for Long-CoT Hallucination
+# CHI: Causal Hallucination Intervention — Beyond Detection to Action
+
+[![NeurIPS 2026 Submission](https://img.shields.io/badge/NeurIPS-2026-blue)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)]()
 
 ## Overview
 
-This project tackles **online hallucination intervention** during LLM generation. Instead of detecting hallucinations after generation is complete (post-hoc), TRACE-Hallu identifies the **onset point** where hallucinations begin in a reasoning chain and applies targeted intervention (retrieve, verify, revise, or restart) at that point.
+**Causal Hallucination Intervention (CHI)** moves beyond hallucination *detection* to systematically study and train *intervention* strategies. When a hallucination is detected mid-generation, what should the model do? Existing work can detect hallucinations (HaluGate, Probes, Monitoring Decoding) but provides no principled answer to the intervention question. CHI trains an RL-based intervention policy over 5 concrete actions: **truncate**, **backtrack**, **retrieve**, **restart**, **continue** — and learns when each action is optimal.
 
-**Target venue:** NeurIPS 2026
+### Key Insight
 
-**Status:** ~35% complete (pilot stage)
+Hallucination detection is a solved-ish problem (AUC > 0.90 on entity-level probes). But detection without intervention is like a smoke detector without a fire extinguisher. The real question is: *given that we've detected a hallucination at token t, what is the optimal recovery action?* This depends on hallucination type, severity, position, and downstream task. CHI frames this as an RL problem and trains an intervention policy that maximizes factual accuracy while minimizing disruption to fluency.
 
-## Research Questions
+## Why CHI?
 
-1. Does onset-aware intervention reduce claim-level hallucination at matched latency vs post-hoc baselines?
-2. Is onset-triggered intervention better than fixed/random triggers?
-3. Does the gain persist under domain shift?
+| Approach | Capability | What's Missing |
+|----------|-----------|----------------|
+| HaluGate (2025) | Token-level hallucination gating | Only binary gate; no recovery strategy |
+| Hallucination Probes (2025) | Entity-level detection, AUC 0.90 | Detection only; no action after detection |
+| Monitoring Decoding (2025) | Tree-based search to avoid hallucination | Expensive (5-10× decoding cost); no learned policy |
+| RLFH (2025) | RL from hallucination feedback | Trains generation model, not intervention policy |
+| **CHI (Ours)** | **Detection + 5-action intervention policy** | **First learned intervention system** |
 
-## Core Idea
+## Architecture
 
 ```
-Generation Trajectory:  Step1 → Step2 → [Onset!] → Step3(hallu) → Step4(hallu) → ...
-                                           │
-                                    ┌──────┴──────┐
-                                    │  Detector   │
-                                    │  (onset     │
-                                    │   predictor)│
-                                    └──────┬──────┘
-                                           │
-                              ┌────────────┼────────────┐
-                              │            │            │
-                           Retrieve     Verify      Revise/Restart
+                        ┌─────────────────────────────┐
+                        │   Qwen3.5-27B (Teacher)     │
+                        │   Generates traces with     │
+                        │   hallucination labels       │
+                        └──────────┬──────────────────┘
+                                   │ labeled traces
+                                   ▼
+┌──────────────────────────────────────────────────────────┐
+│                   Qwen3.5-9B (Student)                    │
+│                                                           │
+│  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐ │
+│  │ Onset        │    │ Intervention │    │ Generation   │ │
+│  │ Detector     │───▶│ Policy       │───▶│ Executor     │ │
+│  │ (probe on    │    │ (RL-trained  │    │ (applies     │ │
+│  │  hidden      │    │  5 actions)  │    │  chosen      │ │
+│  │  states)     │    │              │    │  action)     │ │
+│  └─────────────┘    └──────────────┘    └──────────────┘ │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## Method
+### 5 Intervention Actions
 
-1. **Claim Graph Extraction:** Convert generation trajectory into step-level factual claims
-2. **Onset Detection:** Predict hallucination onset from prefix-only features (entropy, confidence, consistency)
-3. **Intervention Policy:** Select from {retrieve, verify, revise, restart, continue} based on onset signal
-4. **Cost-Aware Optimization:** Maximize claim-level factuality under token/latency penalty
+| Action | Description | When Optimal |
+|--------|-------------|-------------|
+| **Truncate** | Stop generation at hallucination point | High confidence hallucination, end of sentence |
+| **Backtrack** | Rewind to last factual checkpoint, re-generate | Mid-sentence hallucination with salvageable prefix |
+| **Retrieve** | Pause, query retrieval system, inject context | Knowledge gap hallucination (missing facts) |
+| **Restart** | Discard entire response, regenerate from scratch | Severe structural hallucination, wrong premise |
+| **Continue** | Ignore detection signal (false positive handling) | Low confidence detection, minor factual uncertainty |
 
-## Current Results (Pilot)
+### Components
 
-| Metric | Value |
-|---|---|
-| Detector F1 | 0.644 |
-| Policy Accuracy | 0.525 |
-| Average Tokens | 43.25 |
-| Utility | 0.4997 |
+1. **Trace Generator** (Qwen3.5-27B): Generates long-form responses with per-token hallucination labels using self-consistency checking against a reference corpus. Produces training data for detector and policy.
 
-The pilot runs on offline GSM8K-derived traces, not a full claim-level benchmark.
+2. **Onset Detector**: Linear probe on Qwen3.5-9B hidden states (layer 24 of 48) trained to predict hallucination onset. Binary classification: "hallucination starts at this token" vs. "factual continuation". Outputs confidence score.
+
+3. **Intervention Policy**: Small transformer (4 layers, 128 dim) that takes:
+   - Detector confidence score + hidden state at detection point
+   - Generated text so far (encoded)
+   - Original prompt/context
+   - Outputs: distribution over 5 actions
+
+4. **Execution Module**: Implements each action's mechanics (rewind buffer, retrieval API, restart logic).
+
+## Quick Start
+
+```bash
+conda create -n chi python=3.11 && conda activate chi
+pip install -r requirements.txt
+
+# Phase 1: Generate labeled traces with Qwen3.5-27B
+bash scripts/generate_traces.sh
+
+# Phase 2: Train onset detector on hidden states
+bash scripts/train_detector.sh
+
+# Phase 3: RL-train intervention policy
+bash scripts/train_policy.sh
+
+# Phase 4: Evaluate on TruthfulQA + HaluEval + FaithDial
+bash scripts/eval_all.sh
+```
+
+## Hardware Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| GPU | 8× A100-80GB |
+| Trace generation | 4× A100 for Qwen3.5-27B, ~72h |
+| Detector training | 1× A100, ~4h |
+| Policy RL training | 8× A100, ~36h |
+| Evaluation | 2× A100, ~12h |
+| Storage | ~500GB (traces + model checkpoints) |
 
 ## Repository Structure
 
 ```
 nips-trace-hallu/
-├── README.md              # This file
-├── PROPOSAL.md            # Falsifiable thesis and success criteria
-├── PLAN.md                # Stage-gate execution plan
-├── EXPERIMENTS.md          # Evaluation protocol and results
-├── PAPERS.md              # Core references with URLs
-├── README_RUN.md          # Runbook
-├── environment.yml        # Conda environment spec
+├── src/
+│   ├── trace/
+│   │   ├── generator.py            # Qwen3.5-27B trace generation
+│   │   ├── labeler.py              # Self-consistency hallucination labeling
+│   │   └── reference_corpus.py     # Reference knowledge base interface
+│   ├── detector/
+│   │   ├── onset_probe.py          # Linear probe on hidden states
+│   │   ├── hidden_extractor.py     # Extract hidden states at inference
+│   │   └── calibration.py          # Detector confidence calibration
+│   ├── policy/
+│   │   ├── intervention_net.py     # 5-action policy transformer
+│   │   ├── rl_trainer.py           # PPO for intervention policy
+│   │   ├── reward.py               # Factuality + fluency reward
+│   │   └── action_executor.py      # Truncate/backtrack/retrieve/restart/continue
+│   ├── data/
+│   │   ├── truthfulqa.py           # TruthfulQA loader
+│   │   ├── halueval.py             # HaluEval loader
+│   │   └── faithdial.py            # FaithDial loader
+│   └── eval/
+│       ├── factuality.py           # NLI-based factuality scoring
+│       ├── fluency.py              # Perplexity + coherence metrics
+│       └── intervention_analysis.py # Action distribution analysis
+├── configs/
+│   ├── trace_gen_27b.yaml
+│   ├── detector_probe.yaml
+│   ├── policy_ppo.yaml
+│   └── eval_config.yaml
 ├── scripts/
-│   └── run_trace_hallu_pilot.py   # Pilot experiment script
-└── results/
-    ├── trace_hallu_pilot_20260227_150036.json
-    └── trace_hallu_policy_20260227_150036.csv
+├── PROPOSAL.md
+├── PAPERS.md
+├── PLAN.md
+└── requirements.txt
 ```
 
-## Quick Start
+## Expected Results
 
-```bash
-conda env create -f environment.yml
-conda activate nips_trace_hallu
-python scripts/run_trace_hallu_pilot.py
+| Metric | No Intervention | Detection-only (Truncate) | CHI (Ours) | Target |
+|--------|----------------|--------------------------|------------|--------|
+| TruthfulQA Accuracy | 0.58 | 0.64 | 0.74+ | 0.75 |
+| HaluEval F1 | 0.61 | 0.67 | 0.78+ | 0.80 |
+| FaithDial Faithfulness | 0.72 | 0.76 | 0.85+ | 0.85 |
+| Response Completeness | 1.00 | 0.71 | 0.91+ | 0.90 |
+| Fluency (1-5 scale) | 4.2 | 3.1 | 4.0+ | 4.0 |
+| Avg Latency Overhead | 0ms | 15ms | 85ms | <100ms |
+
+## Citation
+
+```bibtex
+@inproceedings{chi2026,
+  title={Causal Hallucination Intervention: Beyond Detection to Learned Recovery Actions},
+  author={Anonymous},
+  booktitle={NeurIPS},
+  year={2026}
+}
 ```
-
-## Quantitative Success Criteria
-
-- **Primary:** Claim-F1 >= +3.0 absolute over strongest post-hoc baseline at matched cost
-- **Secondary:** No more than 10% latency increase at matched quality
-
-## Key References
-
-- LLM-Check (NeurIPS 2024)
-- Long-form factuality in LLMs (NeurIPS 2024)
-- SLED (NeurIPS 2024)
-- Self-RAG (ICLR 2024)
-- Auditing Meta-Cognitive Hallucinations (NeurIPS 2025)
-
-See [PAPERS.md](PAPERS.md) for full list with direct URLs.
-
-## Remaining Work
-
-1. Implement real claim-level extraction pipeline
-2. Build online intervention loop with LLM generation
-3. Evaluate on LongFact/SAFE, HaluEval, multi-hop QA benchmarks
-4. Compare against SelfCheckGPT, LLM-Check, SLED, Self-RAG
-5. Multi-seed replication with statistical significance
 
 ## License
 
-Research code for academic use.
+MIT License
