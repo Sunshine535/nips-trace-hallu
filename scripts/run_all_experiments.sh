@@ -13,6 +13,13 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 source "${SCRIPT_DIR}/gpu_utils.sh"
 auto_setup
 
+# --- Activate project venv (created by setup.sh) ---
+PROJ_DIR_ROOT="$(dirname "$SCRIPT_DIR")"
+if [ -f "$PROJ_DIR_ROOT/.venv/bin/activate" ]; then
+    source "$PROJ_DIR_ROOT/.venv/bin/activate"
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
 CONFIG="${PROJECT_DIR}/configs/trace_config.yaml"
 
 TRACES_DIR="${PROJECT_DIR}/data/traces"
