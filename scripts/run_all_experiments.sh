@@ -7,6 +7,10 @@
 # ============================================================================
 set -euo pipefail
 
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
+export TOKENIZERS_PARALLELISM=false
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=gpu_utils.sh
@@ -245,3 +249,20 @@ log "Policy:   $POLICY_DIR"
 log "Results:  $RESULTS_DIR"
 log "Logs:     $LOG_DIR"
 log "========================================="
+
+# --- Pipeline completion marker ---
+DONE_FILE="$(dirname "$(dirname "${BASH_SOURCE[0]}")")/results/.pipeline_done"
+mkdir -p "$(dirname "$DONE_FILE")"
+cat > "$DONE_FILE" << DONEEOF
+{
+  "project": "$(basename "$(dirname "$(dirname "${BASH_SOURCE[0]}")")")",
+  "completed_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "hostname": "$(hostname)",
+  "gpus": "${NUM_GPUS:-unknown}",
+  "status": "PIPELINE_COMPLETE"
+}
+DONEEOF
+echo ""
+echo "[PIPELINE_COMPLETE] All experiments finished successfully."
+echo "  Marker: $DONE_FILE"
+echo "  Run 'bash collect_results.sh' to package results."
