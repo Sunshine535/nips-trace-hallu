@@ -247,7 +247,7 @@ def extract_hidden_states_for_trace(
     hidden_dict = {}
     for layer_idx in layer_indices:
         if layer_idx < len(outputs.hidden_states):
-            hs = outputs.hidden_states[layer_idx][0].cpu().numpy().astype(np.float16)
+            hs = outputs.hidden_states[layer_idx][0].cpu().float().numpy().astype(np.float16)
             hidden_dict[layer_idx] = hs
 
     return hidden_dict, inputs["input_ids"].shape[1]
