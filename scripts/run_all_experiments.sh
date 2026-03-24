@@ -159,6 +159,10 @@ log "========================================="
 log "[Stage 5/6] Ablation studies"
 log "========================================="
 
+log "Threshold ablation (parallel across ${NUM_GPUS} GPU(s))"
+GPU_IDX=0
+PIDS=()
+LABELS=()
 for THRESHOLD in 0.3 0.4 0.5 0.6 0.7; do
     ABLATION_TAG="threshold_${THRESHOLD}"
     ABLATION_OUT="${RESULTS_DIR}/ablation_${ABLATION_TAG}.json"
@@ -166,21 +170,35 @@ for THRESHOLD in 0.3 0.4 0.5 0.6 0.7; do
         log "Ablation $ABLATION_TAG already done, skipping."
         continue
     fi
-    log "Running ablation: threshold=$THRESHOLD"
-    python "${SCRIPT_DIR}/eval_chi.py" \
-        --model_name "$MODEL_NAME" \
-        --detector_path "$DETECTOR_PATH" \
-        --policy_path "$POLICY_PATH" \
-        --detector_type "$DETECTOR_TYPE" \
-        --layer_indices $LAYER_INDICES \
-        --datasets truthfulqa \
-        --output_dir "$RESULTS_DIR" \
-        --num_samples 200 \
-        --threshold "$THRESHOLD" \
-        2>&1 | tee "${LOG_DIR}/ablation_${ABLATION_TAG}.log"
-    mv "${RESULTS_DIR}/chi_evaluation.json" "$ABLATION_OUT" 2>/dev/null || true
+    log "  GPU $((GPU_IDX % NUM_GPUS)) ← threshold=$THRESHOLD"
+    (
+        CUDA_VISIBLE_DEVICES=$((GPU_IDX % NUM_GPUS)) python "${SCRIPT_DIR}/eval_chi.py" \
+            --model_name "$MODEL_NAME" \
+            --detector_path "$DETECTOR_PATH" \
+            --policy_path "$POLICY_PATH" \
+            --detector_type "$DETECTOR_TYPE" \
+            --layer_indices $LAYER_INDICES \
+            --datasets truthfulqa \
+            --output_dir "${RESULTS_DIR}/tmp_${ABLATION_TAG}" \
+            --num_samples 200 \
+            --threshold "$THRESHOLD" \
+            2>&1 | tee "${LOG_DIR}/ablation_${ABLATION_TAG}.log"
+        mv "${RESULTS_DIR}/tmp_${ABLATION_TAG}/chi_evaluation.json" "$ABLATION_OUT" 2>/dev/null || true
+    ) &
+    PIDS+=($!)
+    LABELS+=("$ABLATION_TAG")
+    GPU_IDX=$((GPU_IDX + 1))
 done
+FAIL=0
+for j in "${!PIDS[@]}"; do
+    wait "${PIDS[$j]}" || { log "ERROR: ${LABELS[$j]} failed"; FAIL=1; }
+done
+if [ $FAIL -ne 0 ]; then exit 1; fi
 
+log "Single-layer detector ablation (parallel across ${NUM_GPUS} GPU(s))"
+GPU_IDX=0
+PIDS=()
+LABELS=()
 for LAYER in $LAYER_INDICES; do
     ABLATION_TAG="single_layer_${LAYER}"
     ABLATION_OUT="${RESULTS_DIR}/ablation_${ABLATION_TAG}.json"
@@ -193,19 +211,29 @@ for LAYER in $LAYER_INDICES; do
         log "No probe for layer $LAYER, skipping."
         continue
     fi
-    log "Running ablation: single layer $LAYER"
-    python "${SCRIPT_DIR}/eval_chi.py" \
-        --model_name "$MODEL_NAME" \
-        --detector_path "$LAYER_DET" \
-        --policy_path "$POLICY_PATH" \
-        --detector_type single_layer \
-        --detector_layer "$LAYER" \
-        --datasets truthfulqa \
-        --output_dir "$RESULTS_DIR" \
-        --num_samples 200 \
-        2>&1 | tee "${LOG_DIR}/ablation_${ABLATION_TAG}.log"
-    mv "${RESULTS_DIR}/chi_evaluation.json" "$ABLATION_OUT" 2>/dev/null || true
+    log "  GPU $((GPU_IDX % NUM_GPUS)) ← single_layer=$LAYER"
+    (
+        CUDA_VISIBLE_DEVICES=$((GPU_IDX % NUM_GPUS)) python "${SCRIPT_DIR}/eval_chi.py" \
+            --model_name "$MODEL_NAME" \
+            --detector_path "$LAYER_DET" \
+            --policy_path "$POLICY_PATH" \
+            --detector_type single_layer \
+            --detector_layer "$LAYER" \
+            --datasets truthfulqa \
+            --output_dir "${RESULTS_DIR}/tmp_${ABLATION_TAG}" \
+            --num_samples 200 \
+            2>&1 | tee "${LOG_DIR}/ablation_${ABLATION_TAG}.log"
+        mv "${RESULTS_DIR}/tmp_${ABLATION_TAG}/chi_evaluation.json" "$ABLATION_OUT" 2>/dev/null || true
+    ) &
+    PIDS+=($!)
+    LABELS+=("$ABLATION_TAG")
+    GPU_IDX=$((GPU_IDX + 1))
 done
+FAIL=0
+for j in "${!PIDS[@]}"; do
+    wait "${PIDS[$j]}" || { log "ERROR: ${LABELS[$j]} failed"; FAIL=1; }
+done
+if [ $FAIL -ne 0 ]; then exit 1; fi
 
 # ============================================================================
 # Stage 6: Summary
