@@ -58,15 +58,60 @@ COLLECTION_DONE="${TRACES_DIR}/collection_stats.json"
 if [ -f "$COLLECTION_DONE" ]; then
     log "Traces already collected, skipping."
 else
-    python "${SCRIPT_DIR}/collect_traces.py" \
-        --model_name "$MODEL_NAME" \
-        --datasets $DATASETS \
-        --output_dir "$TRACES_DIR" \
-        --layer_indices $LAYER_INDICES \
-        --batch_size "$(auto_batch_size 9 4)" \
-        --num_traces_per_question 3 \
-        --temperature 0.7 \
-        2>&1 | tee "${LOG_DIR}/stage1_collect_traces.log"
+    # --- Phase 1a: Extract hidden states from pre-existing JSONL traces ---
+    NEED_FULL_COLLECT=""
+    for DS in $DATASETS; do
+        EXISTING_JSONL="${PROJECT_DIR}/traces_${DS}.jsonl"
+        TARGET_H5="${TRACES_DIR}/hidden_states_${DS}.h5"
+        TARGET_JSONL="${TRACES_DIR}/traces_${DS}.jsonl"
+
+        if [ -f "$TARGET_H5" ] && [ -f "$TARGET_JSONL" ]; then
+            log "  ${DS}: HDF5 + JSONL already in place, skipping."
+        elif [ -f "$EXISTING_JSONL" ]; then
+            log "  ${DS}: Found pre-existing traces at ${EXISTING_JSONL}"
+            log "  ${DS}: Extracting hidden states (skipping text generation)..."
+            python "${SCRIPT_DIR}/extract_hidden_states.py" \
+                --jsonl_path "$EXISTING_JSONL" \
+                --output_dir "$TRACES_DIR" \
+                --dataset_name "$DS" \
+                --model_name "$MODEL_NAME" \
+                --layer_indices $LAYER_INDICES \
+                2>&1 | tee "${LOG_DIR}/stage1_extract_${DS}.log"
+        else
+            NEED_FULL_COLLECT="${NEED_FULL_COLLECT} ${DS}"
+        fi
+    done
+
+    # --- Phase 1b: Full collection for datasets without pre-existing traces ---
+    if [ -n "$NEED_FULL_COLLECT" ]; then
+        log "  Running full collect_traces for:${NEED_FULL_COLLECT}"
+        python "${SCRIPT_DIR}/collect_traces.py" \
+            --model_name "$MODEL_NAME" \
+            --datasets $NEED_FULL_COLLECT \
+            --output_dir "$TRACES_DIR" \
+            --layer_indices $LAYER_INDICES \
+            --batch_size "$(auto_batch_size 9 4)" \
+            --num_traces_per_question 3 \
+            --temperature 0.7 \
+            2>&1 | tee "${LOG_DIR}/stage1_collect_traces.log"
+    fi
+
+    # --- Write collection stats ---
+    python -c "
+import json, os, glob
+traces_dir = '${TRACES_DIR}'
+stats = {}
+for jsonl in glob.glob(os.path.join(traces_dir, 'traces_*.jsonl')):
+    ds = os.path.basename(jsonl).replace('traces_', '').replace('.jsonl', '')
+    with open(jsonl) as f:
+        lines = f.readlines()
+    n = len(lines)
+    hallu = sum(1 for l in lines if json.loads(l).get('has_hallucination', False))
+    stats[ds] = {'total': n, 'hallucinated': hallu, 'rate': hallu/max(n,1)}
+with open(os.path.join(traces_dir, 'collection_stats.json'), 'w') as f:
+    json.dump(stats, f, indent=2)
+print(json.dumps(stats, indent=2))
+"
 fi
 
 # ============================================================================
