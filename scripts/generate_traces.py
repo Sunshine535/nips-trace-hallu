@@ -177,7 +177,6 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
     gen_cfg = cfg["generator"]
     output_dir = args.output_dir or cfg["output"]["traces_dir"]

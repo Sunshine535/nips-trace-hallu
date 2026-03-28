@@ -296,7 +296,6 @@ def save_traces_hdf5_jsonl(
 def main():
     args = parse_args()
 
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     torch.manual_seed(args.seed)
 
     os.makedirs(args.output_dir, exist_ok=True)

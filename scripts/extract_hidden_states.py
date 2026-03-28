@@ -82,7 +82,6 @@ def extract_hidden_states(model, tokenizer, full_text, layer_indices, max_length
 
 def main():
     args = parse_args()
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.makedirs(args.output_dir, exist_ok=True)
 
     logger.info(f"Loading traces from {args.jsonl_path}")
