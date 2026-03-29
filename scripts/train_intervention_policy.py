@@ -9,6 +9,7 @@ Train on mix of TruthfulQA + HaluEval traces.
 """
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -26,6 +27,28 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.intervention_actions import Action, ACTION_NAMES
+
+
+def save_training_checkpoint(path, model, optimizer, epoch, step, **extra):
+    torch.save({"epoch": epoch, "step": step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict() if optimizer else None,
+                **extra}, path)
+
+
+def load_training_checkpoint(path, model, optimizer=None):
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    if optimizer and ckpt.get("optimizer_state_dict"):
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    return ckpt.get("epoch", 0), ckpt.get("step", 0)
+
+
+def find_latest_checkpoint(output_dir, pattern="checkpoint_*.pt"):
+    ckpts = sorted(glob.glob(os.path.join(output_dir, pattern)),
+                   key=os.path.getmtime)
+    return ckpts[-1] if ckpts else None
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +75,8 @@ def parse_args():
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None,
+                        help="'auto' to resume from latest checkpoint, or path")
     return parser.parse_args()
 
 
@@ -284,7 +309,10 @@ def main():
     np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
 
     traces = []
@@ -315,8 +343,21 @@ def main():
     best_avg_reward = -float("inf")
     training_log = []
     reward_window = deque(maxlen=500)
+    start_epoch = 0
 
-    for epoch in range(args.num_epochs):
+    if args.resume_from_checkpoint:
+        ckpt_path = find_latest_checkpoint(args.output_dir, "checkpoint_epoch*.pt")
+        if ckpt_path:
+            logger.info("Resuming from %s", ckpt_path)
+            start_epoch, _ = load_training_checkpoint(ckpt_path, policy, optimizer)
+            ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            best_avg_reward = ckpt_data.get("best_avg_reward", -float("inf"))
+            training_log = ckpt_data.get("training_log", [])
+            if ckpt_data.get("scheduler_state_dict"):
+                scheduler.load_state_dict(ckpt_data["scheduler_state_dict"])
+            logger.info("  Resuming from epoch %d", start_epoch)
+
+    for epoch in range(start_epoch, args.num_epochs):
         buffer = RolloutBuffer()
         epoch_rewards = []
         action_counts = {a.name: 0 for a in Action}
@@ -375,6 +416,14 @@ def main():
         if avg_reward > best_avg_reward:
             best_avg_reward = avg_reward
             torch.save(policy.state_dict(), os.path.join(args.output_dir, "best_policy.pt"))
+
+        if (epoch + 1) % 10 == 0:
+            save_training_checkpoint(
+                os.path.join(args.output_dir, f"checkpoint_epoch{epoch + 1}.pt"),
+                policy, optimizer, epoch + 1, 0,
+                best_avg_reward=best_avg_reward, training_log=training_log,
+                scheduler_state_dict=scheduler.state_dict(),
+            )
 
     torch.save(policy.state_dict(), os.path.join(args.output_dir, "final_policy.pt"))
 

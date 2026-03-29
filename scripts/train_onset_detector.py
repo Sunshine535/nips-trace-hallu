@@ -9,6 +9,7 @@ Saves best detector checkpoint.
 """
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -25,6 +26,28 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.onset_detector import OnsetDetectorConfig, OnsetLinearProbe, MultiLayerOnsetDetector
+
+
+def save_training_checkpoint(path, model, optimizer, epoch, step, **extra):
+    torch.save({"epoch": epoch, "step": step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict() if optimizer else None,
+                **extra}, path)
+
+
+def load_training_checkpoint(path, model, optimizer=None):
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    if optimizer and ckpt.get("optimizer_state_dict"):
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    return ckpt.get("epoch", 0), ckpt.get("step", 0)
+
+
+def find_latest_checkpoint(output_dir, pattern="checkpoint_*.pt"):
+    ckpts = sorted(glob.glob(os.path.join(output_dir, pattern)),
+                   key=os.path.getmtime)
+    return ckpts[-1] if ckpts else None
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +75,8 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max_seq_length", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None,
+                        help="'auto' to resume from latest checkpoint, or path")
     return parser.parse_args()
 
 
@@ -177,7 +202,7 @@ def compute_metrics(logits, labels, mask):
 
 
 def train_single_layer(
-    dataset, layer_idx, hidden_size, config, device,
+    dataset, layer_idx, hidden_size, config, device, output_dir=None,
 ):
     """Train a single-layer onset probe."""
     det_config = OnsetDetectorConfig(
@@ -205,8 +230,20 @@ def train_single_layer(
     best_f1 = 0.0
     best_state = None
     history = []
+    start_epoch = 0
 
-    for epoch in range(config["num_epochs"]):
+    if output_dir:
+        ckpt_path = find_latest_checkpoint(output_dir, f"checkpoint_probe_layer{layer_idx}_epoch*.pt")
+        if ckpt_path:
+            logger.info("  Resuming probe layer %d from %s", layer_idx, ckpt_path)
+            start_epoch, _ = load_training_checkpoint(ckpt_path, probe, optimizer)
+            ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            best_f1 = ckpt_data.get("best_f1", 0.0)
+            history = ckpt_data.get("history", [])
+            if ckpt_data.get("scheduler_state_dict"):
+                scheduler.load_state_dict(ckpt_data["scheduler_state_dict"])
+
+    for epoch in range(start_epoch, config["num_epochs"]):
         probe.train()
         train_loss = 0.0
         n_train = 0
@@ -267,13 +304,21 @@ def train_single_layer(
             best_f1 = metrics["f1"]
             best_state = {k: v.cpu().clone() for k, v in probe.state_dict().items()}
 
+        if output_dir:
+            save_training_checkpoint(
+                os.path.join(output_dir, f"checkpoint_probe_layer{layer_idx}_epoch{epoch + 1}.pt"),
+                probe, optimizer, epoch + 1, 0,
+                best_f1=best_f1, history=history,
+                scheduler_state_dict=scheduler.state_dict(),
+            )
+
     if best_state:
         probe.load_state_dict(best_state)
     return probe, history, best_f1
 
 
 def train_multi_layer_ensemble(
-    dataset, layer_indices, hidden_size, config, device,
+    dataset, layer_indices, hidden_size, config, device, output_dir=None,
 ):
     """Train the multi-layer ensemble detector end-to-end."""
     det_config = OnsetDetectorConfig(hidden_size=hidden_size, dropout=config["dropout"])
@@ -298,8 +343,20 @@ def train_multi_layer_ensemble(
     best_f1 = 0.0
     best_state = None
     history = []
+    start_epoch = 0
 
-    for epoch in range(config["num_epochs"]):
+    if output_dir:
+        ckpt_path = find_latest_checkpoint(output_dir, "checkpoint_ensemble_epoch*.pt")
+        if ckpt_path:
+            logger.info("  Resuming ensemble from %s", ckpt_path)
+            start_epoch, _ = load_training_checkpoint(ckpt_path, detector, optimizer)
+            ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            best_f1 = ckpt_data.get("best_f1", 0.0)
+            history = ckpt_data.get("history", [])
+            if ckpt_data.get("scheduler_state_dict"):
+                scheduler.load_state_dict(ckpt_data["scheduler_state_dict"])
+
+    for epoch in range(start_epoch, config["num_epochs"]):
         detector.train()
         train_loss = 0.0
         n_train = 0
@@ -359,6 +416,14 @@ def train_multi_layer_ensemble(
             best_f1 = metrics["f1"]
             best_state = {k: v.cpu().clone() for k, v in detector.state_dict().items()}
 
+        if output_dir:
+            save_training_checkpoint(
+                os.path.join(output_dir, f"checkpoint_ensemble_epoch{epoch + 1}.pt"),
+                detector, optimizer, epoch + 1, 0,
+                best_f1=best_f1, history=history,
+                scheduler_state_dict=scheduler.state_dict(),
+            )
+
     if best_state:
         detector.load_state_dict(best_state)
     return detector, history, best_f1
@@ -369,7 +434,10 @@ def main():
     torch.manual_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
 
     logger.info(f"Loading traces from {args.traces_dir}")
@@ -400,10 +468,13 @@ def main():
     best_overall_f1 = 0.0
     best_layer = None
 
+    resume_dir = args.output_dir if args.resume_from_checkpoint else None
+
     for layer_idx in args.layer_indices:
         logger.info(f"\n--- Layer {layer_idx} ---")
         probe, history, best_f1 = train_single_layer(
             dataset, layer_idx, args.hidden_size, config, device,
+            output_dir=resume_dir,
         )
         per_layer_results[layer_idx] = {"best_f1": best_f1, "history": history}
 
@@ -424,6 +495,7 @@ def main():
 
     detector, ensemble_history, ensemble_f1 = train_multi_layer_ensemble(
         dataset, args.layer_indices, args.hidden_size, config, device,
+        output_dir=resume_dir,
     )
 
     detector_path = os.path.join(args.output_dir, "multi_layer_detector.pt")

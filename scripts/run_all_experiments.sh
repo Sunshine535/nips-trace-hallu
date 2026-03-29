@@ -24,6 +24,19 @@ if [ -f "$PROJ_DIR_ROOT/.venv/bin/activate" ]; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
+TORCHRUN=$(get_torchrun_cmd)
+
+PHASE_MARKER_DIR="$PROJ_DIR_ROOT/results/.phase_markers"
+mkdir -p "$PHASE_MARKER_DIR"
+FORCE_RERUN="${FORCE_RERUN:-0}"
+
+phase_done() { touch "$PHASE_MARKER_DIR/phase_${1}.done"; echo "[PHASE $1] Completed at $(date)"; }
+is_phase_done() {
+    [[ "$FORCE_RERUN" == "1" ]] && return 1
+    [[ -f "$PHASE_MARKER_DIR/phase_${1}.done" ]] && echo "[PHASE $1] Already completed. Skipping. (FORCE_RERUN=1 to override)" && return 0
+    return 1
+}
+
 CONFIG="${PROJECT_DIR}/configs/trace_config.yaml"
 
 TRACES_DIR="${PROJECT_DIR}/data/traces"
@@ -50,6 +63,7 @@ log "========================================="
 # ============================================================================
 # Stage 1: Collect Annotated Traces (HDF5 + JSONL)
 # ============================================================================
+if ! is_phase_done 1; then
 log "========================================="
 log "[Stage 1/6] Collecting annotated traces"
 log "========================================="
@@ -113,10 +127,13 @@ with open(os.path.join(traces_dir, 'collection_stats.json'), 'w') as f:
 print(json.dumps(stats, indent=2))
 "
 fi
+phase_done 1
+fi
 
 # ============================================================================
 # Stage 2: Train Hallucination Onset Detector
 # ============================================================================
+if ! is_phase_done 2; then
 log "========================================="
 log "[Stage 2/6] Training onset detector"
 log "========================================="
@@ -125,7 +142,7 @@ DETECTOR_DONE="${DETECTOR_DIR}/detector_summary.json"
 if [ -f "$DETECTOR_DONE" ]; then
     log "Detector already trained, skipping."
 else
-    python "${SCRIPT_DIR}/train_onset_detector.py" \
+    $TORCHRUN "${SCRIPT_DIR}/train_onset_detector.py" \
         --traces_dir "$TRACES_DIR" \
         --datasets $DATASETS \
         --output_dir "$DETECTOR_DIR" \
@@ -136,10 +153,13 @@ else
         --learning_rate 1e-3 \
         2>&1 | tee "${LOG_DIR}/stage2_train_detector.log"
 fi
+phase_done 2
+fi
 
 # ============================================================================
 # Stage 3: Train RL Intervention Policy (PPO)
 # ============================================================================
+if ! is_phase_done 3; then
 log "========================================="
 log "[Stage 3/6] Training intervention policy"
 log "========================================="
@@ -148,7 +168,7 @@ POLICY_DONE="${POLICY_DIR}/training_summary.json"
 if [ -f "$POLICY_DONE" ]; then
     log "Policy already trained, skipping."
 else
-    python "${SCRIPT_DIR}/train_intervention_policy.py" \
+    $TORCHRUN "${SCRIPT_DIR}/train_intervention_policy.py" \
         --traces_dir "$TRACES_DIR" \
         --datasets truthfulqa halueval \
         --output_dir "$POLICY_DIR" \
@@ -158,10 +178,13 @@ else
         --hidden_dim 128 \
         2>&1 | tee "${LOG_DIR}/stage3_train_policy.log"
 fi
+phase_done 3
+fi
 
 # ============================================================================
 # Stage 4: Full CHI Evaluation
 # ============================================================================
+if ! is_phase_done 4; then
 log "========================================="
 log "[Stage 4/6] Full CHI evaluation"
 log "========================================="
@@ -196,10 +219,13 @@ python "${SCRIPT_DIR}/eval_chi.py" \
     --num_samples 500 \
     --max_new_tokens 512 \
     2>&1 | tee "${LOG_DIR}/stage4_eval_chi.log"
+phase_done 4
+fi
 
 # ============================================================================
 # Stage 5: Ablation Studies
 # ============================================================================
+if ! is_phase_done 5; then
 log "========================================="
 log "[Stage 5/6] Ablation studies"
 log "========================================="
@@ -279,10 +305,13 @@ for j in "${!PIDS[@]}"; do
     wait "${PIDS[$j]}" || { log "ERROR: ${LABELS[$j]} failed"; FAIL=1; }
 done
 if [ $FAIL -ne 0 ]; then exit 1; fi
+phase_done 5
+fi
 
 # ============================================================================
 # Stage 6: Summary
 # ============================================================================
+if ! is_phase_done 6; then
 log "========================================="
 log "[Stage 6/6] Generating summary"
 log "========================================="
@@ -313,6 +342,8 @@ if ablations:
             if 'chi_ours' in m:
                 print(f'  {name}: factuality={m[\"chi_ours\"][\"factuality\"]:.4f}')
 "
+phase_done 6
+fi
 
 log "========================================="
 log "CHI experiment pipeline complete!"
