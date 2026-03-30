@@ -1,20 +1,24 @@
 {
-  "phase": "review",
-  "round": 3,
+  "phase": "ready_for_execution",
+  "round": 5,
   "threadId": null,
-  "last_score": 7.0,
-  "last_verdict": "BORDERLINE_COMPETITIVE",
-  "status": "in_progress",
-  "timestamp": "2026-03-30T14:00:00",
-  "score_history": [3.0, 6.0, 7.0],
+  "last_score": 6.0,
+  "last_verdict": "WEAK_REJECT_BORDERLINE",
+  "status": "code_complete_needs_gpu_execution",
+  "timestamp": "2026-03-30T17:00:00",
+  "score_history": [3.0, 6.0, 7.0, 6.0, 6.0],
   "key_changes": [
     "R1->R2: Claim-level NLI labeling, factuality eval, baselines, multi-seed",
-    "R2->R3: Detector calibration, completeness metrics, PHI rename, offline-to-online framing"
+    "R2->R3: Detector calibration, completeness metrics, PHI rename",
+    "R3->R4: Online RL training, 6-feature policy, correlation analysis",
+    "R4->R5: 4-judge factuality (DeBERTa+BART+lexical+grounded), budget-matched Pareto, helpfulness RL reward, rule-based baselines, 18-config ablations"
   ],
-  "remaining_for_8": [
-    "Run full online evaluation with matched-budget comparisons",
-    "Human audit 300-500 cases",
-    "Cross-model transfer Qwen->Llama",
-    "Offline reward vs online gain correlation"
+  "reviewer_says_8_if": [
+    "Full budget-matched results (64/128/256/512) with CIs on 2-3 benchmarks",
+    "PHI PPO beats ThresholdCascade and always_* baselines at matched budgets",
+    "Human audit 300-500 cases (factuality + helpfulness + failure modes)",
+    "Judge robustness: correlations among 4 judges, judge ablations",
+    "Cross-model transfer (Qwen->Llama)",
+    "Latency/compute overhead accounting"
   ]
 }

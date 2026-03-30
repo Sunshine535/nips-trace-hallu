@@ -131,6 +131,33 @@ if should_run_stage 3 && ! is_phase_done 3; then
     phase_done 3
 fi
 
+# === Stage 3b: Online Policy Fine-tuning ===
+if should_run_stage 3b && ! is_phase_done 3b; then
+    log "[Stage 3b/6] Online policy fine-tuning (real intervention rewards)"
+
+    DETECTOR_PATH="${DETECTOR_DIR}/multi_layer_detector.pt"
+    OFFLINE_POLICY="${POLICY_DIR}/best_policy.pt"
+    ONLINE_POLICY_DIR="${PROJECT_DIR}/checkpoints/online_policy"
+
+    if [ -f "$DETECTOR_PATH" ] && [ -f "$OFFLINE_POLICY" ]; then
+        python3 "${SCRIPT_DIR}/train_policy_online.py" \
+            --model_name "$MODEL_NAME" \
+            --detector_path "$DETECTOR_PATH" \
+            --layer_indices $LAYER_INDICES \
+            --hidden_size 4096 \
+            --output_dir "$ONLINE_POLICY_DIR" \
+            --dataset truthfulqa \
+            --max_samples 200 \
+            --num_epochs 20 \
+            --max_new_tokens 256 \
+            --seed 42 \
+            2>&1 | tee "${LOG_DIR}/stage3b_online_policy.log"
+    else
+        log "  Skipping online training (missing detector or offline policy)"
+    fi
+    phase_done 3b
+fi
+
 # === Stage 4: Full Online Evaluation ===
 if should_run_stage 4 && ! is_phase_done 4; then
     log "[Stage 4/6] Full online evaluation (3 seeds)"

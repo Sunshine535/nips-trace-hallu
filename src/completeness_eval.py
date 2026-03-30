@@ -37,13 +37,31 @@ class CompletenessMetrics:
         }
 
 
+_completeness_nli = None
+
+
+def _get_completeness_nli():
+    """Lazy-init NLI model for semantic completeness checking."""
+    global _completeness_nli
+    if _completeness_nli is None:
+        try:
+            from src.claim_labeler import NLILabeler, ClaimLabelerConfig
+            config = ClaimLabelerConfig()
+            _completeness_nli = NLILabeler(config)
+        except Exception:
+            _completeness_nli = "unavailable"
+    return _completeness_nli
+
+
 def compute_completeness(
     generated: str,
     reference_answers: list[str],
     min_claim_length: int = 5,
+    use_nli: bool = True,
 ) -> float:
     """
     Compute completeness: proportion of reference claims covered in the generation.
+    Uses NLI entailment for semantic matching when available.
     """
     extractor = ClaimExtractor()
     reference = " ".join(reference_answers)
@@ -51,14 +69,21 @@ def compute_completeness(
     if not ref_claims:
         return 1.0
 
-    gen_lower = generated.lower()
-    covered = 0
-    for claim in ref_claims:
-        claim_words = set(claim["text"].lower().split())
-        gen_words = set(gen_lower.split())
-        overlap = len(claim_words & gen_words) / max(len(claim_words), 1)
-        if overlap > 0.5:
-            covered += 1
+    nli = _get_completeness_nli() if use_nli else "unavailable"
+
+    if nli != "unavailable" and nli is not None:
+        ref_texts = [c["text"] for c in ref_claims]
+        results = nli.classify_claims(ref_texts, generated)
+        covered = sum(1 for r in results if r["entailment_prob"] > 0.5)
+    else:
+        gen_lower = generated.lower()
+        covered = 0
+        for claim in ref_claims:
+            claim_words = set(claim["text"].lower().split())
+            gen_words = set(gen_lower.split())
+            overlap = len(claim_words & gen_words) / max(len(claim_words), 1)
+            if overlap > 0.5:
+                covered += 1
 
     return covered / len(ref_claims)
 

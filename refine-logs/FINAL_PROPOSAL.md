@@ -24,12 +24,14 @@ LLMs generate fluent but factually incorrect text (hallucinations). Current miti
 - Evaluated online with real interventions during generation
 
 ### Evaluation Protocol
-- **Factuality**: Claim-level NLI verification
-- **Completeness**: Reference claim coverage (prevents winning by omission)
+- **Factuality**: Multi-judge verification (NLI + lexical + consistency), NOT single-model dependent
+- **Completeness**: NLI-based semantic matching of reference claims
 - **Helpfulness**: Combined factuality × completeness
 - **Detector**: AUPRC, ECE, onset lead-time
+- **Budget-matched**: Pareto curves at fixed token budgets [64, 128, 256, 512]
 - **Statistics**: 3 seeds, bootstrap 95% CIs, paired bootstrap significance
-- **Baselines**: No intervention, Always truncate, Oracle, DoLa, ITI, SelfCheckGPT
+- **Baselines**: No intervention, Always truncate, Oracle, DoLa, ITI, SelfCheckGPT, rule-cascade, rule-always-backtrack
+- **Ablations**: 18 configs covering detector layers, policy features, action space, learning method
 
 ## Validation Plan
 1. Detector AUPRC >= 0.7 with positive lead-time on TruthfulQA + HaluEval
@@ -41,4 +43,5 @@ LLMs generate fluent but factually incorrect text (hallucinations). Current miti
 ## ARIS Review History
 - Round 1: 3/10 (RETHINK) — labels invalid, eval invalid, no baselines
 - Round 2: 6/10 — claim-level NLI, baselines added, still missing calibration
-- Round 3: 7/10 — calibration, completeness, PHI rename. Gap = execution.
+- Round 3: 7/10 — calibration, completeness, PHI rename. Gap = execution
+- Round 4: 6/10 — online RL added but metric circularity flagged, missing budget-matched eval

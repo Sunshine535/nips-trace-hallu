@@ -277,6 +277,8 @@ def evaluate_no_intervention(
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
+            "text": text,
+            "tokens": gen_len,
         })
     return results
 
@@ -311,6 +313,8 @@ def evaluate_always_truncate(
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
+            "text": text,
+            "tokens": len(text.split()),
         })
     return results
 
@@ -345,6 +349,8 @@ def evaluate_oracle(
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
+            "text": text,
+            "tokens": len(text.split()),
         })
     return results
 
@@ -389,6 +395,8 @@ def evaluate_chi(
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
+            "text": text,
+            "tokens": len(text.split()),
         })
 
     return results, action_counts
@@ -417,6 +425,8 @@ def evaluate_dola_baseline(model, tokenizer, samples, args):
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
+            "text": out["text"],
+            "tokens": out.get("num_tokens", len(out["text"].split())),
         })
     return results
 
@@ -443,8 +453,54 @@ def evaluate_selfcheck_baseline(model, tokenizer, samples, args):
             "interventions": 0,
             "latency": latency,
             "consistency": out.get("consistency_score", 0),
+            "text": out["text"],
+            "tokens": len(out["text"].split()),
         })
     return results
+
+
+def evaluate_rule_policy(
+    model, tokenizer, detector, executor, rule_policy, samples, layer_indices, args, policy_name,
+):
+    """Evaluate a rule-based policy using the same detector as PHI."""
+    results = []
+    action_counts = {a.name: 0 for a in Action}
+
+    for sample in tqdm(samples, desc=f"Rule: {policy_name}"):
+        prompt = f"Question: {sample['question']}\n\nAnswer:"
+        prompt_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(model.device)
+        start_time = time.time()
+
+        text, onset, gen_ids, confidence, gen_len = generate_with_onset_detection(
+            model, tokenizer, detector, prompt, layer_indices,
+            max_new_tokens=args.max_new_tokens, threshold=args.threshold,
+            detector_type=args.detector_type,
+        )
+
+        n_interventions = 0
+        if onset > 0:
+            action = rule_policy.select_action(confidence=confidence, threshold=args.threshold)
+            action_counts[action.name] += 1
+            n_interventions = 1
+
+            if action != Action.CONTINUE:
+                result = executor.execute(action, gen_ids, onset, original_prompt_ids=prompt_ids)
+                text = tokenizer.decode(result["new_ids"][0], skip_special_tokens=True)
+
+        latency = time.time() - start_time
+        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
+
+        results.append({
+            "factuality": factuality,
+            "perplexity": min(ppl, 1000.0),
+            "interventions": n_interventions,
+            "latency": latency,
+            "text": text,
+            "tokens": len(text.split()),
+        })
+
+    return results, action_counts
 
 
 def aggregate_seed_results(all_seed_results: dict) -> dict:
@@ -535,7 +591,27 @@ def run_single_seed(model, tokenizer, detector, executor, policy, args, samples,
         logger.info("[baseline] SelfCheckGPT")
         methods["selfcheckgpt"] = evaluate_selfcheck_baseline(model, tokenizer, samples, args)
 
-    logger.info("[ours] CHI")
+    if "rule_cascade" in args.baselines:
+        logger.info("[baseline] Rule: threshold cascade")
+        from src.rule_policies import RULE_POLICIES
+        rule_results, rule_actions = evaluate_rule_policy(
+            model, tokenizer, detector, executor,
+            RULE_POLICIES["threshold_cascade"], samples, args.layer_indices, args,
+            "threshold_cascade",
+        )
+        methods["rule_cascade"] = rule_results
+
+    if "rule_always_backtrack" in args.baselines:
+        logger.info("[baseline] Rule: always backtrack")
+        from src.rule_policies import RULE_POLICIES
+        rule_results, rule_actions = evaluate_rule_policy(
+            model, tokenizer, detector, executor,
+            RULE_POLICIES["always_backtrack"], samples, args.layer_indices, args,
+            "always_backtrack",
+        )
+        methods["rule_always_backtrack"] = rule_results
+
+    logger.info("[ours] PHI")
     chi_results, action_counts = evaluate_chi(
         model, tokenizer, detector, executor, policy, samples, args.layer_indices, args,
     )
@@ -635,25 +711,51 @@ def main():
             chi_fact = ds_metrics["chi_ours"]["factuality"]
             ds_metrics["improvement_over_baseline"] = chi_fact - baseline_fact
 
+        try:
+            from src.budget_eval import evaluate_under_budget
+            budget_data = {}
+            for method_name, result_list in seed_results[last_seed].items():
+                if isinstance(result_list, list) and len(result_list) > 0:
+                    if "factuality" in result_list[0]:
+                        budget_data[method_name] = [
+                            {"text": r.get("text", ""), "factuality": r["factuality"],
+                             "tokens": r.get("tokens", 0), "latency": r.get("latency", 0)}
+                            for r in result_list
+                        ]
+            if budget_data:
+                ds_metrics["budget_matched"] = evaluate_under_budget(budget_data)
+                logger.info("  Budget-matched evaluation completed")
+        except Exception as e:
+            logger.warning(f"  Budget-matched evaluation failed: {e}")
+
         all_results[ds_name] = ds_metrics
 
     output_path = os.path.join(args.output_dir, "chi_evaluation.json")
     with open(output_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
 
+    total_eval_time = time.time()
+
     logger.info(f"\n{'='*60}")
-    logger.info("CHI EVALUATION SUMMARY")
+    logger.info("PHI EVALUATION SUMMARY")
     logger.info(f"{'='*60}")
     for ds_name, metrics in all_results.items():
         logger.info(f"\n{ds_name}:")
         for method, m in metrics.items():
             if isinstance(m, dict) and "factuality" in m:
-                logger.info(f"  {method:20s}: fact={m['factuality']:.4f} ppl={m['perplexity']:.1f}")
+                logger.info(f"  {method:20s}: fact={m['factuality']:.4f} ppl={m['perplexity']:.1f} "
+                           f"lat={m.get('avg_latency_s', 0):.2f}s")
         if "improvement_over_baseline" in metrics:
-            logger.info(f"  CHI improvement: {metrics['improvement_over_baseline']:+.4f}")
+            logger.info(f"  PHI improvement: {metrics['improvement_over_baseline']:+.4f}")
         if "multi_seed_aggregate" in metrics and "significance_vs_baseline" in metrics["multi_seed_aggregate"]:
             sig = metrics["multi_seed_aggregate"]["significance_vs_baseline"]
             logger.info(f"  Significance (paired bootstrap): p={sig['p_value']:.4f}")
+        if "budget_matched" in metrics:
+            bm = metrics["budget_matched"]
+            if "pareto_front" in bm:
+                logger.info("  Pareto front:")
+                for pt in bm["pareto_front"]:
+                    logger.info(f"    {pt['method']:20s} budget={pt['budget']} fact={pt['factuality']:.4f}")
 
     logger.info(f"\nResults saved to {output_path}")
 
