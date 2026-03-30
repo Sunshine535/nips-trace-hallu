@@ -51,7 +51,7 @@ def parse_args():
                         choices=["single_layer", "multi_layer"])
     parser.add_argument("--detector_layer", type=int, default=24)
     parser.add_argument("--layer_indices", type=int, nargs="+", default=[8, 16, 24, 32])
-    parser.add_argument("--hidden_size", type=int, default=3584)
+    parser.add_argument("--hidden_size", type=int, default=4096)
     parser.add_argument("--datasets", type=str, nargs="+",
                         default=["truthfulqa", "halueval", "faithdial"])
     parser.add_argument("--output_dir", type=str, default="./results")
@@ -59,6 +59,17 @@ def parse_args():
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None,
+                        help="Multiple seeds for replicated evaluation (e.g. 42 137 2024)")
+    parser.add_argument("--baselines", type=str, nargs="+",
+                        default=["no_intervention", "always_truncate", "oracle_detector",
+                                 "dola", "selfcheckgpt"],
+                        help="Baselines to evaluate")
+    parser.add_argument("--use_claim_eval", action="store_true", default=True,
+                        help="Use claim-level NLI evaluation instead of string matching")
+    parser.add_argument("--dola_premature_layer", type=int, default=16)
+    parser.add_argument("--iti_alpha", type=float, default=15.0)
+    parser.add_argument("--selfcheck_num_samples", type=int, default=5)
     return parser.parse_args()
 
 
@@ -94,8 +105,37 @@ def load_eval_dataset(name, max_samples):
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
 
-def check_factuality(generated: str, correct_answers: list[str], incorrect_answers: list[str]) -> float:
-    """Score factuality: 1.0 if matches correct, 0.0 if matches incorrect, 0.5 otherwise."""
+_factuality_evaluator = None
+
+
+def get_factuality_evaluator():
+    """Lazy-init the claim-level factuality evaluator."""
+    global _factuality_evaluator
+    if _factuality_evaluator is None:
+        from src.factuality_eval import FactualityEvaluator, FactualityConfig
+        config = FactualityConfig()
+        _factuality_evaluator = FactualityEvaluator(config)
+    return _factuality_evaluator
+
+
+def check_factuality(
+    generated: str,
+    correct_answers: list[str],
+    incorrect_answers: list[str],
+    use_claim_level: bool = True,
+) -> float:
+    """
+    Score factuality using claim-level NLI verification (default).
+    Falls back to heuristic if NLI model unavailable.
+    """
+    if use_claim_level:
+        try:
+            evaluator = get_factuality_evaluator()
+            result = evaluator.evaluate_single(generated, correct_answers, incorrect_answers)
+            return result["factuality_score"]
+        except Exception as e:
+            logger.warning(f"Claim-level evaluation failed ({e}), falling back to heuristic")
+
     gen_lower = generated.lower().strip()
 
     for ans in correct_answers:
@@ -356,11 +396,160 @@ def evaluate_chi(
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def evaluate_dola_baseline(model, tokenizer, samples, args):
+    """DoLa: Decoding by Contrasting Layers baseline."""
+    from src.baselines import DoLaDecoder
+    dola = DoLaDecoder(model, tokenizer, premature_layer=args.dola_premature_layer)
+    results = []
+    for sample in tqdm(samples, desc="DoLa"):
+        prompt = f"Question: {sample['question']}\n\nAnswer:"
+        start_time = time.time()
+        out = dola.generate(prompt, max_new_tokens=args.max_new_tokens)
+        latency = time.time() - start_time
+        factuality = check_factuality(
+            out["text"], sample["correct_answers"],
+            sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
+        ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
+        results.append({
+            "factuality": factuality,
+            "perplexity": min(ppl, 1000.0),
+            "interventions": 0,
+            "latency": latency,
+        })
+    return results
+
+
+def evaluate_selfcheck_baseline(model, tokenizer, samples, args):
+    """SelfCheckGPT baseline."""
+    from src.baselines import SelfCheckGPT
+    checker = SelfCheckGPT(model, tokenizer, num_samples=args.selfcheck_num_samples)
+    results = []
+    for sample in tqdm(samples, desc="SelfCheckGPT"):
+        prompt = f"Question: {sample['question']}\n\nAnswer:"
+        start_time = time.time()
+        out = checker.generate_and_check(prompt, max_new_tokens=args.max_new_tokens)
+        latency = time.time() - start_time
+        factuality = check_factuality(
+            out["text"], sample["correct_answers"],
+            sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
+        ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
+        results.append({
+            "factuality": factuality,
+            "perplexity": min(ppl, 1000.0),
+            "interventions": 0,
+            "latency": latency,
+            "consistency": out.get("consistency_score", 0),
+        })
+    return results
+
+
+def aggregate_seed_results(all_seed_results: dict) -> dict:
+    """Aggregate results across seeds with bootstrap CIs."""
+    from src.factuality_eval import paired_bootstrap_test
+
+    aggregated = {}
+    methods = list(all_seed_results[list(all_seed_results.keys())[0]].keys())
+
+    for method in methods:
+        if not isinstance(all_seed_results[list(all_seed_results.keys())[0]].get(method), list):
+            continue
+
+        all_facts = []
+        for seed, results in all_seed_results.items():
+            if method in results:
+                facts = [r["factuality"] for r in results[method]]
+                all_facts.extend(facts)
+
+        if not all_facts:
+            continue
+
+        arr = np.array(all_facts)
+        aggregated[method] = {
+            "mean_factuality": float(arr.mean()),
+            "std_factuality": float(arr.std()),
+            "n_total": len(arr),
+            "n_seeds": len(all_seed_results),
+        }
+
+        rng = np.random.default_rng(42)
+        boot_means = []
+        for _ in range(1000):
+            sample = rng.choice(arr, size=len(arr), replace=True)
+            boot_means.append(sample.mean())
+        boot_means = np.sort(boot_means)
+        aggregated[method]["ci_95"] = [
+            float(boot_means[int(0.025 * len(boot_means))]),
+            float(boot_means[int(0.975 * len(boot_means))]),
+        ]
+
+    if "no_intervention" in aggregated and "chi_ours" in aggregated:
+        baseline_scores = []
+        chi_scores = []
+        for seed, results in all_seed_results.items():
+            if "no_intervention" in results and "chi_ours" in results:
+                baseline_scores.extend([r["factuality"] for r in results["no_intervention"]])
+                chi_scores.extend([r["factuality"] for r in results["chi_ours"]])
+
+        if len(baseline_scores) == len(chi_scores) and len(baseline_scores) > 0:
+            sig = paired_bootstrap_test(chi_scores, baseline_scores)
+            aggregated["significance_vs_baseline"] = sig
+
+    return aggregated
+
+
+def run_single_seed(model, tokenizer, detector, executor, policy, args, samples, seed):
+    """Run full evaluation for a single seed."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    logger.info(f"\n--- Seed {seed} ---")
+
+    methods = {}
+
+    if "no_intervention" in args.baselines:
+        logger.info("[baseline] No intervention")
+        methods["no_intervention"] = evaluate_no_intervention(
+            model, tokenizer, detector, samples, args.layer_indices, args,
+        )
+
+    if "always_truncate" in args.baselines:
+        logger.info("[baseline] Always truncate")
+        methods["always_truncate"] = evaluate_always_truncate(
+            model, tokenizer, detector, executor, samples, args.layer_indices, args,
+        )
+
+    if "oracle_detector" in args.baselines:
+        logger.info("[baseline] Oracle detector")
+        methods["oracle_detector"] = evaluate_oracle(
+            model, tokenizer, detector, executor, samples, args.layer_indices, args,
+        )
+
+    if "dola" in args.baselines:
+        logger.info("[baseline] DoLa")
+        methods["dola"] = evaluate_dola_baseline(model, tokenizer, samples, args)
+
+    if "selfcheckgpt" in args.baselines:
+        logger.info("[baseline] SelfCheckGPT")
+        methods["selfcheckgpt"] = evaluate_selfcheck_baseline(model, tokenizer, samples, args)
+
+    logger.info("[ours] CHI")
+    chi_results, action_counts = evaluate_chi(
+        model, tokenizer, detector, executor, policy, samples, args.layer_indices, args,
+    )
+    methods["chi_ours"] = chi_results
+    methods["chi_action_distribution"] = action_counts
+
+    return methods
+
+
 def main():
     args = parse_args()
-    torch.manual_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
+    seeds = args.seeds or [args.seed]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger.info(f"Loading generator: {args.model_name}")
@@ -394,6 +583,8 @@ def main():
     for ds_name in args.datasets:
         logger.info(f"\n{'='*60}")
         logger.info(f"Evaluating on: {ds_name}")
+        logger.info(f"Seeds: {seeds}")
+        logger.info(f"Baselines: {args.baselines}")
         logger.info(f"{'='*60}")
 
         try:
@@ -404,31 +595,17 @@ def main():
 
         logger.info(f"Loaded {len(samples)} samples")
 
-        methods = {}
-
-        logger.info("\n[1/4] No intervention baseline")
-        methods["no_intervention"] = evaluate_no_intervention(
-            model, tokenizer, detector, samples, args.layer_indices, args,
-        )
-
-        logger.info("\n[2/4] Always truncate")
-        methods["always_truncate"] = evaluate_always_truncate(
-            model, tokenizer, detector, executor, samples, args.layer_indices, args,
-        )
-
-        logger.info("\n[3/4] Oracle detector")
-        methods["oracle_detector"] = evaluate_oracle(
-            model, tokenizer, detector, executor, samples, args.layer_indices, args,
-        )
-
-        logger.info("\n[4/4] CHI (ours)")
-        chi_results, action_counts = evaluate_chi(
-            model, tokenizer, detector, executor, policy, samples, args.layer_indices, args,
-        )
-        methods["chi_ours"] = chi_results
+        seed_results = {}
+        for seed in seeds:
+            seed_results[seed] = run_single_seed(
+                model, tokenizer, detector, executor, policy, args, samples, seed,
+            )
 
         ds_metrics = {}
-        for method_name, result_list in methods.items():
+        last_seed = seeds[-1]
+        for method_name, result_list in seed_results[last_seed].items():
+            if not isinstance(result_list, list):
+                continue
             n = len(result_list)
             avg_factuality = np.mean([r["factuality"] for r in result_list])
             avg_ppl = np.mean([r["perplexity"] for r in result_list])
@@ -447,18 +624,22 @@ def main():
                 f"interventions={avg_interventions:.2f} latency={avg_latency:.2f}s"
             )
 
-        ds_metrics["chi_action_distribution"] = {k: v for k, v in action_counts.items()}
+        if len(seeds) > 1:
+            ds_metrics["multi_seed_aggregate"] = aggregate_seed_results(seed_results)
 
-        baseline_fact = ds_metrics["no_intervention"]["factuality"]
-        chi_fact = ds_metrics["chi_ours"]["factuality"]
-        ds_metrics["improvement_over_baseline"] = chi_fact - baseline_fact
-        ds_metrics["improvement_over_truncate"] = chi_fact - ds_metrics["always_truncate"]["factuality"]
+        if "chi_action_distribution" in seed_results[last_seed]:
+            ds_metrics["chi_action_distribution"] = seed_results[last_seed]["chi_action_distribution"]
+
+        if "no_intervention" in ds_metrics and "chi_ours" in ds_metrics:
+            baseline_fact = ds_metrics["no_intervention"]["factuality"]
+            chi_fact = ds_metrics["chi_ours"]["factuality"]
+            ds_metrics["improvement_over_baseline"] = chi_fact - baseline_fact
 
         all_results[ds_name] = ds_metrics
 
     output_path = os.path.join(args.output_dir, "chi_evaluation.json")
     with open(output_path, "w") as f:
-        json.dump(all_results, f, indent=2)
+        json.dump(all_results, f, indent=2, default=str)
 
     logger.info(f"\n{'='*60}")
     logger.info("CHI EVALUATION SUMMARY")
@@ -470,6 +651,9 @@ def main():
                 logger.info(f"  {method:20s}: fact={m['factuality']:.4f} ppl={m['perplexity']:.1f}")
         if "improvement_over_baseline" in metrics:
             logger.info(f"  CHI improvement: {metrics['improvement_over_baseline']:+.4f}")
+        if "multi_seed_aggregate" in metrics and "significance_vs_baseline" in metrics["multi_seed_aggregate"]:
+            sig = metrics["multi_seed_aggregate"]["significance_vs_baseline"]
+            logger.info(f"  Significance (paired bootstrap): p={sig['p_value']:.4f}")
 
     logger.info(f"\nResults saved to {output_path}")
 

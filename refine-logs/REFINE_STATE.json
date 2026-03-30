@@ -1,0 +1,20 @@
+{
+  "phase": "review",
+  "round": 3,
+  "threadId": null,
+  "last_score": 7.0,
+  "last_verdict": "BORDERLINE_COMPETITIVE",
+  "status": "in_progress",
+  "timestamp": "2026-03-30T14:00:00",
+  "score_history": [3.0, 6.0, 7.0],
+  "key_changes": [
+    "R1->R2: Claim-level NLI labeling, factuality eval, baselines, multi-seed",
+    "R2->R3: Detector calibration, completeness metrics, PHI rename, offline-to-online framing"
+  ],
+  "remaining_for_8": [
+    "Run full online evaluation with matched-budget comparisons",
+    "Human audit 300-500 cases",
+    "Cross-model transfer Qwen->Llama",
+    "Offline reward vs online gain correlation"
+  ]
+}

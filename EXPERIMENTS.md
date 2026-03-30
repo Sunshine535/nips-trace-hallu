@@ -1,61 +1,55 @@
-# Experiments: TRACE-Hallu (Revised v2)
+# Experiments: PHI (Predictive Hallucination Intervention)
 
 ## Benchmarks
-- HaluEval.
-- Long-form factual benchmark (LongFact/SAFE-style).
-- HotpotQA and MuSiQue.
+- TruthfulQA (generation split, 817 samples)
+- HaluEval (qa_samples, 10K samples)
+- FaithDial (test split, 3.6K samples)
 
 ## Baselines
-- No mitigation.
-- Post-hoc detector + regenerate.
-- SelfCheckGPT-style detector.
-- Self-RAG style retrieve/critique.
+- No mitigation (greedy decoding)
+- Always truncate at onset
+- Oracle detector + backtrack
+- DoLa (Decoding by Contrasting Layers)
+- ITI (Inference-Time Intervention)
+- SelfCheckGPT (self-consistency detection)
 
 ## Metrics
-- Claim precision/recall/F1.
-- QA EM/F1.
-- Latency, extra tokens, retrieval calls.
-- Cost-normalized factuality score.
+
+### Factuality
+- Claim-level NLI verification (DeBERTa-v3-large-MNLI)
+- Claim precision, recall, F1
+
+### Completeness
+- Reference claim coverage (prevents winning by omission)
+- Helpfulness = α×factuality + (1-α)×completeness
+- Abstention rate
+
+### Detector
+- AUPRC (Area Under Precision-Recall Curve)
+- ECE (Expected Calibration Error)
+- Onset lead-time (tokens before hallucination)
+- False positive burden at 90% recall
+- Trigger curves across thresholds
+
+### Efficiency
+- Latency overhead (seconds)
+- Token budget (generated tokens)
+- Factuality-per-token efficiency
 
 ## Statistical Protocol
-- Minimum 3 replications (seed or disjoint subset).
-- Paired bootstrap on claim-F1 and EM/F1 deltas.
-- Report 95% CI and effect sizes.
+- 3 replications (seeds: 42, 137, 2024)
+- Bootstrap 95% CIs (1000 samples)
+- Paired bootstrap significance tests (10000 samples)
+- Report effect sizes
 
 ## NeurIPS Minimum Publishable Standard
-- Claim-F1 gain `>= +3` absolute at matched cost.
-- Significant gain on at least 2 benchmark families.
-- Full per-step trace release for auditability.
+- Claim-F1 gain >= +3 absolute at matched token budget
+- Significant gain on at least 2 benchmark families (p < 0.05)
+- Helpfulness gain (not just factuality by omission)
+- Detector AUPRC >= 0.7 with ECE < 0.1
 
 ## Current Status
-- Pilot implementation and first result are now available.
-
-## Implemented Pilot (2026-02-27)
-- Script:
-  - `methods/02_trace_hallu/scripts/run_trace_hallu_pilot.py`
-- Command:
-  ```bash
-  python methods/02_trace_hallu/scripts/run_trace_hallu_pilot.py
-  ```
-- Input:
-  - `methods/01_adathink/results/per_sample_Qwen3_8B_20260227_140410.csv`
-- Output:
-  - `methods/02_trace_hallu/results/trace_hallu_pilot_20260227_150036.json`
-  - `methods/02_trace_hallu/results/trace_hallu_policy_20260227_150036.csv`
-
-## Pilot Snapshot
-- Detector test:
-  - precision: `0.475`
-  - recall: `1.000`
-  - F1: `0.644`
-- Policy test (`risk->256 else 64`):
-  - accuracy: `0.525`
-  - avg tokens: `43.25`
-  - utility (`lambda_cost=0.15`): `0.4997`
-- Baselines:
-  - fixed64: acc `0.35`, tokens `21.25`, utility `0.3375`
-  - fixed128: acc `0.40`, tokens `31.875`, utility `0.3813`
-  - fixed256: acc `0.525`, tokens `43.25`, utility `0.4997`
-
-## Limitation
-- This is an offline proxy over GSM8K traces, not yet a true online claim-level hallucination intervention benchmark.
+- Code fully implemented with claim-level evaluation
+- Pending: full online evaluation run
+- Pending: cross-model transfer experiment (Qwen → Llama)
+- Pending: human audit of 300-500 cases

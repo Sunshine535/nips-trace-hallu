@@ -1,4 +1,4 @@
-# CHI: Causal Hallucination Intervention via RL-Trained Onset Detection
+# PHI: Predictive Hallucination Intervention via Onset Detection and Graduated Response
 
 ---
 
@@ -58,39 +58,65 @@ nips-trace-hallu/
 ├── scripts/
 │   ├── gpu_utils.sh                 # Shared GPU auto-detection
 │   ├── run_all_experiments.sh       # Master pipeline (6 stages)
-│   ├── collect_traces.py            # Stage 1: HDF5 trace collection
-│   ├── train_onset_detector.py      # Stage 2: Probe training
-│   ├── train_intervention_policy.py # Stage 3: PPO policy
-│   ├── eval_chi.py                  # Stage 4–5: Evaluation + ablations
+│   ├── collect_traces.py            # Stage 1: Trace collection with claim-level NLI labeling
+│   ├── train_onset_detector.py      # Stage 2: Multi-layer probe training
+│   ├── train_intervention_policy.py # Stage 3: PPO intervention policy
+│   ├── eval_chi.py                  # Stage 4–5: Online evaluation + ablations
 │   └── run_trace_generation.sh      # Standalone trace generation
-├── src/                             # Core library modules
+├── src/
+│   ├── onset_detector.py            # Linear probe + multi-layer ensemble detector
+│   ├── intervention_actions.py      # 5 intervention actions + executor
+│   ├── claim_labeler.py             # Claim-level NLI hallucination labeling
+│   ├── factuality_eval.py           # Claim-level factuality evaluation + bootstrap
+│   ├── baselines.py                 # DoLa, ITI, SelfCheckGPT implementations
+│   ├── detector_calibration.py      # AUPRC, ECE, lead-time, trigger curves
+│   └── completeness_eval.py         # Completeness, helpfulness, abstention metrics
 ├── results/                         # Experiment outputs
 ├── logs/                            # Training logs
-└── docs/                            # Additional documentation
+└── refine-logs/                     # ARIS research refinement history
 ```
+
+## Method Overview
+
+PHI operates in three phases:
+
+1. **Predict**: A multi-layer ensemble detector monitors hidden states during generation to predict hallucination onset before it becomes visible in the output.
+
+2. **Intervene**: Upon detection, a learned PPO policy selects from graduated interventions: continue, truncate, backtrack, or restart — balancing factuality improvement against computational cost.
+
+3. **Evaluate**: Online evaluation with claim-level NLI verification, calibration metrics, and budget-matched comparisons against strong baselines.
 
 ## Experiments
 
 | # | Stage | Description | Est. Time (8×A100) |
 |---|-------|-------------|-------------------|
-| 1 | Trace Collection | Collect annotated hidden-state traces with hallucination labels across TruthfulQA, HaluEval, FaithDial | ~48 hrs |
-| 2 | Onset Detector | Train per-layer and multi-layer ensemble probes on collected traces | ~8 hrs |
-| 3 | Intervention Policy | Train PPO policy to decide when/how to intervene during generation | ~24 hrs |
-| 4 | End-to-End CHI Eval | Full evaluation comparing CHI against baselines (greedy, top-k, DoLa, ITI) | ~12 hrs |
-| 5 | Ablation Studies | Threshold sweep (5 values) + per-layer detector comparison (4 layers) | ~8 hrs |
-| 6 | Summary | Aggregate results and generate tables | < 1 hr |
+| 1 | Trace Collection | Collect hidden-state traces with claim-level NLI labels on TruthfulQA, HaluEval, FaithDial | ~48 hrs |
+| 2 | Onset Detector | Train per-layer probes + multi-layer ensemble with calibration | ~8 hrs |
+| 3 | Intervention Policy | Train PPO policy with 4 graduated actions | ~24 hrs |
+| 4 | Online Evaluation | Full evaluation: PHI vs DoLa, ITI, SelfCheckGPT, ablations | ~12 hrs |
+| 5 | Ablation Studies | Threshold sweep + per-layer comparison + budget analysis | ~8 hrs |
+| 6 | Summary | Aggregate results, bootstrap CIs, significance tests | < 1 hr |
+
+## Evaluation Protocol
+
+- **Factuality**: Claim-level NLI verification (DeBERTa-v3-large-MNLI)
+- **Completeness**: Reference claim coverage (prevents winning by omission)
+- **Helpfulness**: Combined factuality × completeness score
+- **Detector**: AUPRC, ECE, onset lead-time, false positive burden
+- **Statistics**: 3 seeds, bootstrap 95% CIs, paired bootstrap significance tests
+- **Baselines**: No intervention, Always truncate, Oracle, DoLa, ITI, SelfCheckGPT
 
 ## Timeline & GPU Hours
 
-- **Model**: Qwen/Qwen3.5-9B
-- **Total estimated GPU-hours**: ~776 (8× A100-80GB)
+- **Model**: Qwen/Qwen3.5-9B (primary), Llama-3-8B (transfer experiment)
+- **Total estimated GPU-hours**: ~800 (8× A100-80GB)
 - **Wall-clock time**: ~4–5 days on 8× A100
 
 ## Citation
 
 ```bibtex
-@inproceedings{chi2026neurips,
-  title     = {{CHI}: Causal Hallucination Intervention via {RL}-Trained Onset Detection},
+@inproceedings{phi2026neurips,
+  title     = {{PHI}: Predictive Hallucination Intervention via Onset Detection and Graduated Response},
   author    = {Anonymous},
   booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
   year      = {2026}

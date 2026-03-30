@@ -65,8 +65,8 @@ def parse_args():
                         default=["truthfulqa", "halueval", "faithdial"])
     parser.add_argument("--output_dir", type=str, default="./checkpoints/detector")
     parser.add_argument("--layer_indices", type=int, nargs="+", default=[8, 16, 24, 32])
-    parser.add_argument("--hidden_size", type=int, default=3584,
-                        help="Hidden size of the base model (Qwen3.5-9B=3584)")
+    parser.add_argument("--hidden_size", type=int, default=4096,
+                        help="Hidden size of the base model (Qwen3.5-9B=4096)")
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--learning_rate", type=float, default=1e-3)

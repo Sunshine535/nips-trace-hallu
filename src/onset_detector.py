@@ -12,7 +12,7 @@ from typing import Optional
 
 @dataclass
 class OnsetDetectorConfig:
-    hidden_size: int = 3584
+    hidden_size: int = 4096
     num_classes: int = 2
     dropout: float = 0.1
     use_layer_norm: bool = True

@@ -129,18 +129,40 @@ def build_cot_prompt(question: str) -> str:
     )
 
 
+_claim_labeler = None
+
+
+def get_claim_labeler():
+    """Lazy-init the claim-level labeler to avoid loading NLI model when not needed."""
+    global _claim_labeler
+    if _claim_labeler is None:
+        from src.claim_labeler import ClaimLevelLabeler, ClaimLabelerConfig
+        config = ClaimLabelerConfig()
+        _claim_labeler = ClaimLevelLabeler(config)
+    return _claim_labeler
+
+
 def label_hallucination_onset(
     trace_tokens: list[str],
     trace_text: str,
     correct_answers: list[str],
     incorrect_answers: list[str],
+    use_claim_level: bool = True,
 ) -> list[int]:
     """
     Label each token position: 0=normal, 1=hallucination onset/continuation.
-    Heuristic: find earliest sentence contradicting correct answers or matching incorrect ones.
+    Uses claim-level NLI verification by default (use_claim_level=True).
+    Falls back to heuristic word-overlap if NLI model unavailable.
     """
-    labels = [0] * len(trace_tokens)
+    if use_claim_level:
+        try:
+            labeler = get_claim_labeler()
+            result = labeler.label_trace(trace_text, correct_answers, trace_tokens)
+            return result["token_labels"]
+        except Exception as e:
+            logger.warning(f"Claim-level labeling failed ({e}), falling back to heuristic")
 
+    labels = [0] * len(trace_tokens)
     sentences = re.split(r'(?<=[.!?])\s+', trace_text)
     if not sentences:
         return labels

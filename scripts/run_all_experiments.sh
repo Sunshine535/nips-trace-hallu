@@ -147,7 +147,7 @@ else
         --datasets $DATASETS \
         --output_dir "$DETECTOR_DIR" \
         --layer_indices $LAYER_INDICES \
-        --hidden_size 3584 \
+        --hidden_size 4096 \
         --num_epochs 20 \
         --batch_size 64 \
         --learning_rate 1e-3 \
@@ -213,7 +213,7 @@ python "${SCRIPT_DIR}/eval_chi.py" \
     --policy_path "$POLICY_PATH" \
     --detector_type "$DETECTOR_TYPE" \
     --layer_indices $LAYER_INDICES \
-    --hidden_size 3584 \
+    --hidden_size 4096 \
     --datasets $DATASETS \
     --output_dir "$RESULTS_DIR" \
     --num_samples 500 \
