@@ -345,8 +345,24 @@ def main():
 
     best_reward = -float("inf")
     training_log = []
+    start_epoch = 0
 
-    for epoch in range(args.num_epochs):
+    latest_ckpt = sorted(
+        [f for f in os.listdir(args.output_dir) if f.startswith("checkpoint_epoch") and f.endswith(".pt")],
+        key=lambda x: os.path.getmtime(os.path.join(args.output_dir, x)),
+    ) if os.path.isdir(args.output_dir) else []
+    if latest_ckpt:
+        ckpt_path = os.path.join(args.output_dir, latest_ckpt[-1])
+        logger.info(f"Resuming from checkpoint: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        policy.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt.get("epoch", 0)
+        best_reward = ckpt.get("best_reward", -float("inf"))
+        training_log = ckpt.get("training_log", [])
+        logger.info(f"  Resumed at epoch {start_epoch}, best_reward={best_reward:.4f}")
+
+    for epoch in range(start_epoch, args.num_epochs):
         policy.train()
         rollouts = []
         action_counts = {a.name: 0 for a in Action if a != Action.RETRIEVE}

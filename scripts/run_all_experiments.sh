@@ -142,7 +142,7 @@ DETECTOR_DONE="${DETECTOR_DIR}/detector_summary.json"
 if [ -f "$DETECTOR_DONE" ]; then
     log "Detector already trained, skipping."
 else
-    $TORCHRUN "${SCRIPT_DIR}/train_onset_detector.py" \
+    python "${SCRIPT_DIR}/train_onset_detector.py" \
         --traces_dir "$TRACES_DIR" \
         --datasets $DATASETS \
         --output_dir "$DETECTOR_DIR" \
@@ -151,6 +151,7 @@ else
         --num_epochs 20 \
         --batch_size 64 \
         --learning_rate 1e-3 \
+        --resume_from_checkpoint auto \
         2>&1 | tee "${LOG_DIR}/stage2_train_detector.log"
 fi
 phase_done 2
@@ -168,7 +169,7 @@ POLICY_DONE="${POLICY_DIR}/training_summary.json"
 if [ -f "$POLICY_DONE" ]; then
     log "Policy already trained, skipping."
 else
-    $TORCHRUN "${SCRIPT_DIR}/train_intervention_policy.py" \
+    python "${SCRIPT_DIR}/train_intervention_policy.py" \
         --traces_dir "$TRACES_DIR" \
         --datasets truthfulqa halueval \
         --output_dir "$POLICY_DIR" \
@@ -176,6 +177,7 @@ else
         --batch_size 256 \
         --learning_rate 3e-4 \
         --hidden_dim 128 \
+        --resume_from_checkpoint auto \
         2>&1 | tee "${LOG_DIR}/stage3_train_policy.log"
 fi
 phase_done 3
