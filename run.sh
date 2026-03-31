@@ -9,17 +9,23 @@ PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJ_DIR"
 
 echo "============================================================"
-echo " Starting full experiment pipeline"
+echo " PHI: Predictive Hallucination Intervention"
+echo " Starting full experiment pipeline (6 stages)"
 echo " Project: $(basename "$PROJ_DIR")"
 echo " Time:    $(date)"
 echo "============================================================"
 
-# Activate venv if present; otherwise use system Python
+# Activate venv or conda env
 if [ -f "$PROJ_DIR/.venv/bin/activate" ]; then
     source "$PROJ_DIR/.venv/bin/activate"
     echo "[env] Activated venv: $PROJ_DIR/.venv"
+elif [ -n "$CONDA_DEFAULT_ENV" ] && [ "$CONDA_DEFAULT_ENV" = "nips-trace-hallu" ]; then
+    echo "[env] Conda env already active: $CONDA_DEFAULT_ENV"
+elif command -v conda &>/dev/null; then
+    eval "$(conda shell.bash hook 2>/dev/null)"
+    conda activate nips-trace-hallu 2>/dev/null && echo "[env] Activated conda: nips-trace-hallu" || echo "[env] No conda env 'nips-trace-hallu', using system Python"
 else
-    echo "[env] No .venv found, using system Python"
+    echo "[env] No .venv or conda found, using system Python"
 fi
 
 # Quick dependency check

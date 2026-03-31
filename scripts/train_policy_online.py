@@ -26,9 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -69,48 +67,15 @@ def parse_args():
     return parser.parse_args()
 
 
-class HiddenStateConditionedPolicy(nn.Module):
-    """
-    Policy conditioned on detector hidden-state summary + generation context.
-    Input: [detector_confidence, layer_agreement, gen_length_norm,
-            query_complexity, onset_position_norm, max_confidence_so_far]
-    """
-
-    def __init__(self, input_dim=6, hidden_dim=128, num_actions=4):
-        super().__init__()
-        self.shared = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.policy_head = nn.Linear(hidden_dim, num_actions)
-        self.value_head = nn.Linear(hidden_dim, 1)
-
-    def forward(self, state):
-        h = self.shared(state)
-        logits = self.policy_head(h)
-        value = self.value_head(h).squeeze(-1)
-        return logits, value
-
-    def get_action(self, state):
-        logits, value = self.forward(state)
-        dist = Categorical(logits=logits)
-        action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), value
-
-    def evaluate_action(self, state, action):
-        logits, value = self.forward(state)
-        dist = Categorical(logits=logits)
-        return dist.log_prob(action), dist.entropy(), value
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_intervention_policy import InterventionPolicyMLP
 
 
 ACTION_COSTS = {
     Action.CONTINUE: 0.0,
     Action.TRUNCATE: 0.05,
     Action.BACKTRACK: 0.3,
+    Action.RETRIEVE: 0.5,
     Action.RESTART: 0.8,
 }
 
@@ -186,23 +151,21 @@ def online_rollout_step(
     gen_text = tokenizer.decode(generated_ids[0, prompt_len:], skip_special_tokens=True)
     gen_len = generated_ids.shape[1] - prompt_len
 
-    layer_agreement = np.std(per_layer_confs[-5:]) if len(per_layer_confs) >= 5 else 0.5
     gen_norm = min(gen_len / 512.0, 1.0)
     q_complexity = min(len(sample["question"].split()) / 50.0, 1.0)
     onset_norm = onset_pos / max(gen_len, 1) if onset_pos >= 0 else 1.0
+    hallu_density = max_conf * 0.5
 
     state = torch.tensor([
         max_conf,
-        1.0 - layer_agreement,
         gen_norm,
         q_complexity,
         onset_norm,
-        max_conf,
+        hallu_density,
     ], dtype=torch.float32, device=device).unsqueeze(0)
 
     action_idx, log_prob, entropy, value = policy.get_action(state)
-    action_map = {0: Action.CONTINUE, 1: Action.TRUNCATE, 2: Action.BACKTRACK, 3: Action.RESTART}
-    action = action_map[action_idx.item()]
+    action = Action(action_idx.item())
 
     if onset_pos > 0 and action != Action.CONTINUE:
         result = executor.execute(action, generated_ids, onset_pos, original_prompt_ids=prompt_ids)
@@ -322,7 +285,7 @@ def main():
     int_config = InterventionConfig(max_new_tokens=args.max_new_tokens)
     executor = InterventionExecutor(model, tokenizer, int_config)
 
-    policy = HiddenStateConditionedPolicy(input_dim=6, hidden_dim=128, num_actions=4).to(device)
+    policy = InterventionPolicyMLP(input_dim=5, hidden_dim=128, num_actions=5).to(device)
 
     if args.pretrained_policy:
         logger.info(f"Warm-starting from offline policy: {args.pretrained_policy}")
@@ -365,7 +328,7 @@ def main():
     for epoch in range(start_epoch, args.num_epochs):
         policy.train()
         rollouts = []
-        action_counts = {a.name: 0 for a in Action if a != Action.RETRIEVE}
+        action_counts = {a.name: 0 for a in Action}
 
         np.random.shuffle(samples)
         epoch_start = time.time()
@@ -419,7 +382,7 @@ def main():
 
         if avg_reward > best_reward:
             best_reward = avg_reward
-            torch.save(policy.state_dict(), os.path.join(args.output_dir, "best_online_policy.pt"))
+            torch.save(policy.state_dict(), os.path.join(args.output_dir, "best_policy.pt"))
 
         if (epoch + 1) % 5 == 0:
             torch.save({
@@ -430,8 +393,8 @@ def main():
                 "training_log": training_log,
             }, os.path.join(args.output_dir, f"checkpoint_epoch{epoch + 1}.pt"))
 
-    torch.save(policy.state_dict(), os.path.join(args.output_dir, "final_online_policy.pt"))
-    with open(os.path.join(args.output_dir, "online_training_log.json"), "w") as f:
+    torch.save(policy.state_dict(), os.path.join(args.output_dir, "final_policy.pt"))
+    with open(os.path.join(args.output_dir, "training_log.json"), "w") as f:
         json.dump(training_log, f, indent=2)
 
     summary = {

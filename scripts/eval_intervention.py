@@ -123,6 +123,9 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
+    from config_utils import apply_config_defaults
+    apply_config_defaults(args, "eval_intervention", cfg)
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     model_name = cfg["generator"]["model"]

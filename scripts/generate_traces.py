@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 Generate CoT traces with hallucination labels.
-Uses Qwen3.5-27B to generate CoT traces on TruthfulQA/HaluEval.
+Uses Qwen3.5-9B to generate CoT traces on TruthfulQA/HaluEval.
 Auto-labels hallucination onset points by comparing with ground truth.
+
+NOTE: This is a simplified alternative to collect_traces.py that does not
+extract hidden states. Use collect_traces.py for the full pipeline.
 """
 
 import argparse

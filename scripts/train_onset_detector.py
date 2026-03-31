@@ -20,7 +20,7 @@ import h5py
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 import yaml
 
@@ -118,15 +118,26 @@ class TraceHiddenStateDataset(Dataset):
                     if not valid:
                         continue
 
-                    labels = trace["hallu_labels"]
+                    gen_labels = trace["hallu_labels"]
+                    prompt_len = trace.get("prompt_len", 0)
                     seq_len = layer_data[layer_indices[0]].shape[0]
-                    labels = labels[:seq_len]
-                    labels += [0] * (seq_len - len(labels))
+
+                    # Prefix prompt_len zeros (prompt has no hallucination),
+                    # then append generation labels, truncate/pad to seq_len.
+                    full_labels = [0] * prompt_len + gen_labels
+                    full_labels = full_labels[:seq_len]
+                    full_labels += [0] * (seq_len - len(full_labels))
+
+                    # Mask: only score the generation portion, not the prompt
+                    mask = np.zeros(seq_len, dtype=np.float32)
+                    gen_end = min(prompt_len + len(gen_labels), seq_len)
+                    mask[prompt_len:gen_end] = 1.0
 
                     self.items.append({
                         "layer_data": layer_data,
-                        "labels": np.array(labels, dtype=np.int64),
-                        "mask": np.ones(seq_len, dtype=np.float32),
+                        "labels": np.array(full_labels, dtype=np.int64),
+                        "mask": mask,
+                        "sample_idx": trace.get("sample_idx", i),
                     })
 
             logger.info(f"Loaded {len(self.items)} traces from {ds_name}")
@@ -172,6 +183,29 @@ def collate_traces(batch):
     }
 
 
+def group_aware_split(dataset, train_ratio, seed=42):
+    """Split by grouped sample_idx so all traces from the same question stay together."""
+    group_to_indices = {}
+    for i, item in enumerate(dataset.items):
+        sidx = item["sample_idx"]
+        group_to_indices.setdefault(sidx, []).append(i)
+
+    groups = sorted(group_to_indices.keys())
+    rng = np.random.default_rng(seed)
+    rng.shuffle(groups)
+
+    n_train = int(len(groups) * train_ratio)
+    train_groups = set(groups[:n_train])
+
+    train_indices, val_indices = [], []
+    for sidx, indices in group_to_indices.items():
+        (train_indices if sidx in train_groups else val_indices).extend(indices)
+
+    logger.info(f"Group-aware split: {len(train_groups)} train groups ({len(train_indices)} traces), "
+                f"{len(groups) - n_train} val groups ({len(val_indices)} traces)")
+    return Subset(dataset, train_indices), Subset(dataset, val_indices)
+
+
 def compute_metrics(logits, labels, mask):
     """Compute precision, recall, F1, accuracy, and false alarm rate."""
     probs = torch.softmax(logits, dim=-1)
@@ -211,10 +245,7 @@ def train_single_layer(
     )
     probe = OnsetLinearProbe(det_config).to(device)
 
-    train_size = int(len(dataset) * config["train_ratio"])
-    val_size = len(dataset) - train_size
-    split_gen = torch.Generator().manual_seed(42)
-    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=split_gen)
+    train_ds, val_ds = group_aware_split(dataset, config["train_ratio"], seed=42)
 
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=collate_traces,
@@ -325,10 +356,7 @@ def train_multi_layer_ensemble(
     det_config = OnsetDetectorConfig(hidden_size=hidden_size, dropout=config["dropout"])
     detector = MultiLayerOnsetDetector(det_config, layer_indices).to(device)
 
-    train_size = int(len(dataset) * config["train_ratio"])
-    val_size = len(dataset) - train_size
-    split_gen = torch.Generator().manual_seed(42)
-    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=split_gen)
+    train_ds, val_ds = group_aware_split(dataset, config["train_ratio"], seed=42)
 
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=collate_traces,
@@ -433,6 +461,11 @@ def train_multi_layer_ensemble(
 
 def main():
     args = parse_args()
+
+    from config_utils import load_config, apply_config_defaults
+    cfg = load_config(args.config)
+    apply_config_defaults(args, "train_onset_detector", cfg)
+
     torch.manual_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 

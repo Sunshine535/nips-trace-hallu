@@ -5,26 +5,55 @@ __pycache__/
 *.tmp
 *.pid
 
-# Model weights
+# Model weights and checkpoints
 models/
-checkpoints/
-
-# Editor
-.cursor/
-.vscode/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Large experiment artifacts (use collect_results.sh to archive)
-results_archive/*.tar.gz
 checkpoints/**/*.pt
 checkpoints/**/*.bin
 checkpoints/**/*.safetensors
 outputs/**/*.pt
 *.ckpt
-__pycache__/
+
+# Large data files
+data/traces/*.h5
+data/traces/*.jsonl
+traces_*.jsonl
+*.h5
+
+# Results archive
+results_archive/*.tar.gz
+results.zip
+
+# Virtual environments
 .venv/
 *.egg-info/
+
+# Experiment tracking
 wandb/
+
+# Editor / IDE
+.cursor/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (keep directory, ignore contents)
+logs/*.log
+run.log
+
+# ARIS / skill artifacts
+skills/
+templates/
+refine-logs/
+.specstory/
+PLAN.md
+PROPOSAL.md
+PAPERS.md
+EXPERIMENT_PLAN.md
+EXPERIMENTS.md
+AUTO_REVIEW.md
+REVIEW_STATE.json
+README_RUN.md
+run_acp.sh

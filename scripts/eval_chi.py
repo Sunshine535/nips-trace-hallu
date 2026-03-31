@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Full CHI (Causal Hallucination Intervention) system evaluation.
+Full PHI (Predictive Hallucination Intervention) system evaluation.
 
 End-to-end pipeline: detect onset → select intervention → continue/restart.
 Datasets: TruthfulQA, HaluEval, FaithDial.
 Metrics: factuality score, fluency (perplexity), avg intervention count, latency overhead.
 Compare: no intervention, always truncate, detector-oracle (trained detector, NOT
-ground-truth labels), DoLa, ITI, SelfCheckGPT, CHI (ours).
+ground-truth labels), DoLa, ITI, SelfCheckGPT, PHI (ours).
 
 NOTE on "detector_oracle" baseline: this uses our *trained* onset detector with a
 fixed backtrack action.  It is NOT a true ground-truth oracle — it upper-bounds what
@@ -46,7 +46,7 @@ logger = logging.getLogger("eval_chi")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate full CHI system")
+    parser = argparse.ArgumentParser(description="Evaluate full PHI system")
     parser.add_argument("--config", type=str, default="configs/trace_config.yaml")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     parser.add_argument("--detector_path", type=str, required=True,
@@ -130,16 +130,18 @@ def check_factuality(
     correct_answers: list[str],
     incorrect_answers: list[str],
     use_claim_level: bool = True,
-) -> float:
-    """
-    Score factuality using claim-level NLI verification (default).
-    Falls back to heuristic if NLI model unavailable.
+) -> tuple[float, str]:
+    """Score factuality.  Returns (score, method).
+
+    *method* is ``"claim_nli"`` when the NLI evaluator succeeded, or
+    ``"proxy_heuristic"`` when using the word-overlap fallback.  Downstream
+    consumers should label metrics with a ``proxy_`` prefix when heuristic.
     """
     if use_claim_level:
         try:
             evaluator = get_factuality_evaluator()
             result = evaluator.evaluate_single(generated, correct_answers, incorrect_answers)
-            return result["factuality_score"]
+            return result["factuality_score"], "claim_nli"
         except Exception as e:
             logger.warning(f"Claim-level evaluation failed ({e}), falling back to heuristic")
 
@@ -147,11 +149,11 @@ def check_factuality(
 
     for ans in correct_answers:
         if ans and ans.lower().strip() in gen_lower:
-            return 1.0
+            return 1.0, "proxy_heuristic"
 
     for inc in incorrect_answers:
         if inc and inc.lower().strip() in gen_lower:
-            return 0.0
+            return 0.0, "proxy_heuristic"
 
     gen_words = set(gen_lower.split())
     correct_words = set()
@@ -165,10 +167,10 @@ def check_factuality(
     incorrect_overlap = len(gen_words & incorrect_words) / max(len(incorrect_words), 1)
 
     if correct_overlap > incorrect_overlap:
-        return 0.5 + 0.5 * correct_overlap
+        return 0.5 + 0.5 * correct_overlap, "proxy_heuristic"
     elif incorrect_overlap > 0:
-        return max(0.0, 0.5 - 0.5 * incorrect_overlap)
-    return 0.5
+        return max(0.0, 0.5 - 0.5 * incorrect_overlap), "proxy_heuristic"
+    return 0.5, "proxy_heuristic"
 
 
 @torch.no_grad()
@@ -276,14 +278,15 @@ def evaluate_no_intervention(
         )
 
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             text, sample["correct_answers"], sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
@@ -318,14 +321,15 @@ def evaluate_always_truncate(
             n_interventions = 1
 
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             text, sample["correct_answers"], sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
@@ -367,14 +371,15 @@ def evaluate_detector_oracle(
             n_interventions = 1
 
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             text, sample["correct_answers"], sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
@@ -387,11 +392,11 @@ def evaluate_detector_oracle(
 def evaluate_chi(
     model, tokenizer, detector, executor, policy, samples, layer_indices, args,
 ):
-    """CHI: detect onset → select intervention via learned policy → execute."""
+    """PHI: detect onset → select intervention via learned policy → execute."""
     results = []
     action_counts = {a.name: 0 for a in Action}
 
-    for sample in tqdm(samples, desc="CHI (ours)"):
+    for sample in tqdm(samples, desc="PHI (ours)"):
         prompt = f"Question: {sample['question']}\n\nAnswer:"
         prompt_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(model.device)
         prompt_len = prompt_ids.shape[1]
@@ -419,14 +424,15 @@ def evaluate_chi(
             token_count = max(0, result["new_ids"].shape[1] - prompt_len)
 
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             text, sample["correct_answers"], sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
@@ -449,14 +455,15 @@ def evaluate_dola_baseline(model, tokenizer, samples, args):
         start_time = time.time()
         out = dola.generate(prompt, max_new_tokens=args.max_new_tokens)
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             out["text"], sample["correct_answers"],
             sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
@@ -476,14 +483,15 @@ def evaluate_selfcheck_baseline(model, tokenizer, samples, args):
         start_time = time.time()
         out = checker.generate_and_check(prompt, max_new_tokens=args.max_new_tokens)
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             out["text"], sample["correct_answers"],
             sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
@@ -518,14 +526,15 @@ def evaluate_iti_baseline(model, tokenizer, samples, args):
         start_time = time.time()
         out = iti.generate(prompt, max_new_tokens=args.max_new_tokens)
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             out["text"], sample["correct_answers"],
             sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": 0,
             "latency": latency,
@@ -567,14 +576,15 @@ def evaluate_rule_policy(
                 token_count = max(0, result["new_ids"].shape[1] - prompt_len)
 
         latency = time.time() - start_time
-        factuality = check_factuality(
+        fact_score, fact_method = check_factuality(
             text, sample["correct_answers"], sample.get("incorrect_answers", []),
             use_claim_level=args.use_claim_eval,
         )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
-            "factuality": factuality,
+            "factuality": fact_score,
+            "factuality_method": fact_method,
             "perplexity": min(ppl, 1000.0),
             "interventions": n_interventions,
             "latency": latency,
@@ -709,6 +719,11 @@ def run_single_seed(model, tokenizer, detector, executor, policy, args, samples,
 
 def main():
     args = parse_args()
+
+    from config_utils import load_config, apply_config_defaults
+    cfg = load_config(args.config)
+    apply_config_defaults(args, "eval_chi", cfg)
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     seeds = args.seeds or [args.seed]
@@ -774,15 +789,23 @@ def main():
             avg_interventions = np.mean([r["interventions"] for r in result_list])
             avg_latency = np.mean([r["latency"] for r in result_list])
 
-            ds_metrics[method_name] = {
+            proxy_count = sum(1 for r in result_list
+                              if r.get("factuality_method") == "proxy_heuristic")
+            metric_dict = {
                 "factuality": avg_factuality,
                 "perplexity": avg_ppl,
                 "avg_interventions": avg_interventions,
                 "avg_latency_s": avg_latency,
                 "n_samples": n,
             }
+            if proxy_count > 0:
+                metric_dict["proxy_factuality"] = avg_factuality
+                metric_dict["proxy_ratio"] = proxy_count / n
+            ds_metrics[method_name] = metric_dict
+
+            tag = " [PROXY]" if proxy_count > 0 else ""
             logger.info(
-                f"  {method_name:20s}: factuality={avg_factuality:.4f} ppl={avg_ppl:.1f} "
+                f"  {method_name:20s}: factuality={avg_factuality:.4f}{tag} ppl={avg_ppl:.1f} "
                 f"interventions={avg_interventions:.2f} latency={avg_latency:.2f}s"
             )
 
@@ -823,7 +846,7 @@ def main():
     total_eval_time = time.time()
 
     logger.info(f"\n{'='*60}")
-    logger.info("PHI EVALUATION SUMMARY")
+    logger.info("PHI EVALUATION SUMMARY (keys: chi_ours = PHI method)")
     logger.info(f"{'='*60}")
     for ds_name, metrics in all_results.items():
         logger.info(f"\n{ds_name}:")

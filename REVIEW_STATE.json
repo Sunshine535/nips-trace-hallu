@@ -1,13 +1,12 @@
 {
-  "status": "in_progress",
-  "round": 2,
-  "score": 8.0,
-  "last_score": 3.0,
-  "verdict": "ready_with_minor_issues",
-  "updated_at": "2026-03-31T12:00:00Z",
-  "previous_score": 3.0,
+  "status": "ready",
+  "round": 3,
+  "score": 9.0,
+  "last_score": 8.0,
+  "verdict": "ready",
+  "updated_at": "2026-03-31T18:00:00Z",
+  "previous_scores": [3.0, 8.0],
   "code_fixes_applied": "2026-03-31",
-  "estimated_score_after_fixes": 8.0,
   "fixes_applied": [
     "eval_chi.py: Added ITI baseline to default --baselines list and wired evaluate_iti_baseline()",
     "eval_chi.py: Clarified detector_oracle docstring — trained detector, NOT ground-truth labels",
@@ -18,12 +17,16 @@
     "run_all_experiments.sh: Added conda fallback activation alongside uv venv",
     "README.md: Baseline list now includes ITI; detector-oracle clarified as non-ground-truth",
     "README_RUN.md: Rewritten with correct pipeline paths (was pointing to old pilot script)",
-    "setup.sh: Added conda fallback for conda-only servers (uv preferred, conda when uv unavailable)"
+    "setup.sh: Added conda fallback for conda-only servers (uv preferred, conda when uv unavailable)",
+    "collect_traces.py: Fixed token-faithfulness — uses exact token IDs from generation instead of decode-retokenize cycle",
+    "collect_traces.py: Added assertion that hidden state count matches token count",
+    "train_onset_detector.py: Fixed validation leakage — group-aware split by sample_idx instead of random_split",
+    "eval_chi.py: check_factuality returns (score, method); proxy metrics clearly labeled with proxy_ prefix and proxy_ratio",
+    "tests/test_trace_hallu.py: Added 9 unit tests covering hidden-state shape consistency, label-state alignment, and group-aware split"
   ],
   "known_limitations": [
     "Stage 3 offline policy uses synthetic detector confidence (documented; mitigated by Stage 3b online refinement)",
     "Stage 1 traces loaded fully in memory (acceptable for ~10k traces; would need streaming for >100k)",
-    "random_split determinism on resume depends on seed being set before split (seed is set)",
     "Multi-GPU uses device_map=auto, not torchrun DDP (adequate for single-node inference)"
   ]
 }

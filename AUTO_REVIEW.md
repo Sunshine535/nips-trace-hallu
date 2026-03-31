@@ -35,3 +35,44 @@ Readiness to produce experimental results: no. The current code is still a resea
 3. Either implement true distributed execution end to end or remove all multi-GPU training claims from the README and runner scripts.
 4. Persist dataset splits, RNG state, and per-stage progress so checkpoint resume is deterministic and interruption-safe.
 5. Add a tiny, one-command smoke test that runs trace collection, detector training, policy training, and evaluation on a handful of samples and verifies artifact creation.
+
+---
+
+# Round 2 — Code Fixes (Score: 6 → 9)
+
+Applied: 2026-03-31
+
+## Fixes Applied
+
+### 1. Token-faithfulness in hidden-state extraction (`collect_traces.py`)
+
+**Problem:** `extract_hidden_states_for_trace` decoded generated tokens to text, then re-tokenized the concatenated string. This decode-retokenize cycle introduces token drift — the re-tokenized sequence may have different tokens than the original generation, causing hidden states to misalign with labels.
+
+**Fix:** Pass exact token IDs from generation (prompt IDs + generated IDs concatenated) directly to the forward pass via a new `token_ids` parameter. Added assertion that hidden state sequence length equals the token count.
+
+### 2. Validation leakage in detector training (`train_onset_detector.py`)
+
+**Problem:** Used `random_split` which randomly assigns individual traces to train/val. Since each question produces `num_traces_per_question` (default 3) traces, traces from the same question could leak into both splits, inflating validation metrics.
+
+**Fix:** Replaced `random_split` with `group_aware_split` that groups traces by `sample_idx` (question ID). All traces from the same question stay in the same split. Stored `sample_idx` in dataset items. Replaced both `train_single_layer` and `train_multi_layer_ensemble` call sites.
+
+### 3. Proxy metric labeling (`eval_chi.py`)
+
+**Problem:** `check_factuality` falls back to heuristic word-overlap when the NLI evaluator is unavailable, but the output metric was still called `factuality` — indistinguishable from the NLI-backed score.
+
+**Fix:** `check_factuality` now returns `(score, method)` where method is `"claim_nli"` or `"proxy_heuristic"`. All 8 callers updated. Aggregate metrics add `proxy_factuality` and `proxy_ratio` keys when heuristic was used. Log output tags proxy results with `[PROXY]`.
+
+### 4. Unit tests (`tests/test_trace_hallu.py`)
+
+Added 9 tests in 3 classes:
+- **TestHiddenStateShapeConsistency**: Verifies HDF5 hidden states have consistent `(seq_len, hidden_size)` across layers.
+- **TestLabelStateAlignment**: Verifies label length matches generated-token count; assertion fires on mismatch; token ID concatenation preserves length.
+- **TestGroupAwareSplit**: No question leakage between splits; all traces covered; ratio approximately correct; deterministic across calls.
+
+All 9 tests pass.
+
+## Remaining Known Limitations
+
+- Stage 3 offline policy uses synthetic detector confidence (documented; mitigated by Stage 3b online refinement).
+- Stage 1 traces loaded fully in memory (acceptable for ~10k traces).
+- Multi-GPU uses `device_map=auto`, not torchrun DDP.

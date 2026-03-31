@@ -257,8 +257,21 @@ class FactualityEvaluator:
                 con_score = 0.5
                 con_supported = True
 
-            votes = [nli_supported, ind_nli_supported, lex_supported, con_supported]
-            majority = sum(votes) >= 3
+            w_nli, w_lex, w_ind = self.config.judge_weights
+            if alternative_generations and self.config.use_multi_judge:
+                scores_vec = [nli_score, lex_score, ind_nli_score, con_score]
+                weights_vec = [w_nli, w_lex, w_ind, 1.0 - w_nli - w_lex - w_ind]
+            else:
+                scores_vec = [nli_score, lex_score, ind_nli_score]
+                weights_vec = [w_nli, w_lex, w_ind]
+                total_w = sum(weights_vec)
+                weights_vec = [w / total_w for w in weights_vec]
+
+            weighted_score = sum(s * w for s, w in zip(scores_vec, weights_vec))
+            votes = [nli_supported, ind_nli_supported, lex_supported]
+            if alternative_generations and self.config.use_multi_judge:
+                votes.append(con_supported)
+            majority = sum(votes) >= len(votes) / 2
 
             agreement = sum(votes) / len(votes)
             judge_agreements.append(agreement)

@@ -90,7 +90,9 @@ class InterventionExecutor:
         elif action == Action.RETRIEVE:
             return self._do_retrieve(input_ids, onset_position, retrieval_context)
         elif action == Action.RESTART:
-            return self._do_restart(original_prompt_ids or input_ids)
+            return self._do_restart(
+                original_prompt_ids if original_prompt_ids is not None else input_ids
+            )
         else:
             raise ValueError(f"Unknown action: {action}")
 

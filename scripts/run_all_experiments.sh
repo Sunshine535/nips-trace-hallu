@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
-# CHI (Causal Hallucination Intervention) — Full Experiment Pipeline
-# collect_traces → train_detector → train_policy → eval → ablations → figures
+# PHI (Predictive Hallucination Intervention) — Full Experiment Pipeline
+# collect_traces → train_detector → train_policy → eval → ablations → summary
 # Hardware: 4–8× A100-80GB (auto-detected)
 # Model: Qwen/Qwen3.5-9B
 # ============================================================================
@@ -59,7 +59,7 @@ timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(timestamp)] $1"; }
 
 log "========================================="
-log " CHI Experiment Pipeline"
+log " PHI Experiment Pipeline"
 log " Model: ${MODEL_NAME}"
 log " GPUs:  ${NUM_GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})"
 log "========================================="
@@ -230,17 +230,18 @@ phase_done 3b
 fi
 
 # ============================================================================
-# Stage 4: Full CHI Evaluation
+# Stage 4: Full PHI Evaluation
 # ============================================================================
 if ! is_phase_done 4; then
 log "========================================="
-log "[Stage 4/6] Full CHI evaluation"
+log "[Stage 4/6] Full PHI evaluation"
 log "========================================="
 
 DETECTOR_PATH="${DETECTOR_DIR}/multi_layer_detector.pt"
 POLICY_PATH="${POLICY_DIR}/best_policy.pt"
 
 ONLINE_POLICY="${PROJECT_DIR}/checkpoints/online_policy/best_policy.pt"
+ONLINE_FINAL="${PROJECT_DIR}/checkpoints/online_policy/final_policy.pt"
 if [ -f "$ONLINE_POLICY" ]; then
     POLICY_PATH="$ONLINE_POLICY"
     log "Using online-refined policy: $ONLINE_POLICY"
@@ -384,7 +385,7 @@ main_results = os.path.join(results_dir, 'chi_evaluation.json')
 if os.path.exists(main_results):
     with open(main_results) as f:
         data = json.load(f)
-    print('\\n=== CHI Evaluation Summary ===')
+    print('\\n=== PHI Evaluation Summary ===')
     for ds, metrics in data.items():
         print(f'\\nDataset: {ds}')
         for method, m in metrics.items():
@@ -406,7 +407,7 @@ phase_done 6
 fi
 
 log "========================================="
-log "CHI experiment pipeline complete!"
+log "PHI experiment pipeline complete!"
 log "Traces:   $TRACES_DIR"
 log "Detector: $DETECTOR_DIR"
 log "Policy:   $POLICY_DIR"

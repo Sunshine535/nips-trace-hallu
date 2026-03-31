@@ -258,13 +258,22 @@ def extract_hidden_states_for_trace(
     full_text: str,
     layer_indices: list[int],
     max_length: int = 1024,
+    token_ids: torch.Tensor | None = None,
 ) -> dict[int, np.ndarray]:
-    """Run a forward pass on the full generated text and extract hidden states."""
-    inputs = tokenizer(
-        full_text, return_tensors="pt", truncation=True, max_length=max_length,
-    ).to(model.device)
+    """Run a forward pass and extract hidden states.
 
-    outputs = model(**inputs, output_hidden_states=True)
+    When *token_ids* is provided, uses exact IDs from generation to avoid
+    decode-retokenize drift.  Falls back to re-tokenizing *full_text* otherwise.
+    """
+    if token_ids is not None:
+        input_ids = token_ids.to(model.device)
+    else:
+        inputs = tokenizer(
+            full_text, return_tensors="pt", truncation=True, max_length=max_length,
+        ).to(model.device)
+        input_ids = inputs["input_ids"]
+
+    outputs = model(input_ids=input_ids, output_hidden_states=True)
 
     hidden_dict = {}
     for layer_idx in layer_indices:
@@ -272,7 +281,7 @@ def extract_hidden_states_for_trace(
             hs = outputs.hidden_states[layer_idx][0].cpu().float().numpy().astype(np.float16)
             hidden_dict[layer_idx] = hs
 
-    return hidden_dict, inputs["input_ids"].shape[1]
+    return hidden_dict, input_ids.shape[1]
 
 
 def save_traces_hdf5_jsonl(
@@ -318,6 +327,10 @@ def save_traces_hdf5_jsonl(
 def main():
     args = parse_args()
 
+    from config_utils import load_config, apply_config_defaults
+    cfg = load_config(args.config)
+    apply_config_defaults(args, "collect_traces", cfg)
+
     torch.manual_seed(args.seed)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -360,7 +373,7 @@ def main():
                 prompts = [build_cot_prompt(s["question"]) for s in batch]
 
                 try:
-                    gen_results, _ = generate_and_collect_hidden_states(
+                    gen_results, gen_outputs = generate_and_collect_hidden_states(
                         model, tokenizer, prompts, args.layer_indices,
                         max_new_tokens=args.max_new_tokens,
                         temperature=args.temperature,
@@ -372,16 +385,25 @@ def main():
                     continue
 
                 for i, (sample, gen) in enumerate(zip(batch, gen_results)):
-                    full_text = prompts[i] + gen["text"]
+                    prompt_ids = tokenizer(prompts[i], return_tensors="pt")["input_ids"]
+                    gen_ids_tensor = torch.tensor([gen["token_ids"]], dtype=torch.long)
+                    full_token_ids = torch.cat([prompt_ids, gen_ids_tensor], dim=1)
 
                     try:
                         hs_dict, seq_len = extract_hidden_states_for_trace(
-                            model, tokenizer, full_text, args.layer_indices,
+                            model, tokenizer, None, args.layer_indices,
+                            token_ids=full_token_ids,
                         )
                     except torch.cuda.OutOfMemoryError:
                         logger.warning(f"OOM extracting hidden states, skipping trace")
                         torch.cuda.empty_cache()
                         hs_dict = {}
+
+                    if hs_dict:
+                        expected_len = full_token_ids.shape[1]
+                        assert seq_len == expected_len, (
+                            f"Hidden state count {seq_len} != token count {expected_len}"
+                        )
 
                     hallu_labels = label_hallucination_onset(
                         gen["tokens"], gen["text"],
@@ -392,6 +414,7 @@ def main():
                     has_hallucination = any(l == 1 for l in hallu_labels)
                     onset_pos = next((j for j, l in enumerate(hallu_labels) if l == 1), -1)
 
+                    real_prompt_len = prompt_ids.shape[1]
                     trace_entry = {
                         "trace_id": len(all_traces),
                         "sample_idx": batch_start + i,
@@ -406,7 +429,7 @@ def main():
                         "has_hallucination": has_hallucination,
                         "onset_position": onset_pos,
                         "num_tokens": len(gen["tokens"]),
-                        "prompt_len": gen["prompt_len"],
+                        "prompt_len": real_prompt_len,
                     }
                     all_traces.append(trace_entry)
                     all_hidden_states.append(hs_dict)

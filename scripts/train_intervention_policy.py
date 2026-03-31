@@ -312,6 +312,11 @@ def ppo_update(policy, optimizer, buffer, args, device):
 
 def main():
     args = parse_args()
+
+    from config_utils import load_config, apply_config_defaults
+    cfg = load_config(args.config)
+    apply_config_defaults(args, "train_intervention_policy", cfg)
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)

@@ -1,21 +1,30 @@
-generator:
-  model: "Qwen/Qwen3.5-9B"
-  max_length: 2048
-  temperature: 0.7
-  top_p: 0.9
-  num_traces_per_question: 3
-  batch_size: 4
+# ==============================================================================
+# PHI: Predictive Hallucination Intervention — Experiment Configuration
+# ==============================================================================
+# All hyperparameters for the full pipeline (Stages 1–6).
+# Override individual values via CLI arguments to each script.
 
+# --- Stage 1: Trace Collection & Hidden State Extraction ---
+generator:
+  model: "Qwen/Qwen3.5-9B"       # Primary LLM for CoT generation
+  max_length: 2048                 # Max input length for tokenizer
+  temperature: 0.7                 # Sampling temperature for diverse traces
+  top_p: 0.9                      # Nucleus sampling parameter
+  num_traces_per_question: 3       # Multiple traces per question for diversity
+  batch_size: 4                    # Per-GPU batch size (auto-scaled by gpu_utils)
+
+# --- Stage 2: Onset Detector Training ---
 detector:
-  hidden_size: 4096  # Qwen3.5-9B hidden dim
-  num_layers_to_probe: [8, 16, 24, 32]
+  hidden_size: 4096                # Qwen3.5-9B hidden dimension
+  num_layers_to_probe: [8, 16, 24, 32]  # Layers for linear probes
   learning_rate: 1.0e-3
   weight_decay: 0.01
   num_epochs: 20
   batch_size: 64
-  train_ratio: 0.8
-  threshold: 0.5
+  train_ratio: 0.8                 # Group-aware split ratio
+  threshold: 0.5                   # Default detection threshold
 
+# --- Stage 3: Intervention Policy (PPO) ---
 intervention:
   model: "Qwen/Qwen3.5-9B"
   num_actions: 5
@@ -28,11 +37,12 @@ intervention:
     clip_range: 0.2
     value_coeff: 0.5
     entropy_coeff: 0.01
-    ppo_epochs: 4
-    hidden_dim: 128
-  backtrack_window: 3
+    ppo_epochs: 4                  # Inner PPO update epochs per rollout
+    hidden_dim: 128                # MLP hidden dimension
+  backtrack_window: 3              # Tokens to rewind on backtrack
   max_interventions_per_trace: 5
 
+# --- Datasets ---
 datasets:
   truthfulqa:
     name: "truthful_qa"
@@ -47,14 +57,16 @@ datasets:
     config: null
     split: "test"
 
+# --- Stage 4: Evaluation ---
 eval:
-  num_samples: 500
-  temperature: 0.0
+  num_samples: 500                 # Samples per dataset for evaluation
+  temperature: 0.0                 # Greedy decoding for reproducibility
   max_new_tokens: 512
   batch_size: 4
   num_seeds: 3
-  seeds: [42, 137, 2024]
+  seeds: [42, 137, 2024]          # For multi-seed aggregation
 
+# --- Claim-Level Labeling ---
 labeling:
   method: "llm_nli"
   nli_model: "microsoft/deberta-v3-large-mnli"
@@ -62,14 +74,16 @@ labeling:
   claim_extraction: true
   min_claim_confidence: 0.7
 
+# --- Baselines ---
 baselines:
   - "no_intervention"
   - "always_truncate"
-  - "detector_oracle"
+  - "detector_oracle"              # Trained detector + fixed backtrack (NOT ground truth)
   - "dola"
   - "iti"
   - "selfcheckgpt"
 
+# --- Output Directories ---
 output:
   traces_dir: "./data/traces"
   detector_dir: "./checkpoints/detector"

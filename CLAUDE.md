@@ -20,24 +20,27 @@ PHI: Predictive Hallucination Intervention via Onset Detection and Graduated Res
 
 - `scripts/` — 实验脚本
   - `run_all_experiments.sh` — 全阶段编排（Stage 1–6）
-  - `extract_hidden_states.py` — 抽取 hidden states
-  - `collect_traces.py` — 收集轨迹（claim-level NLI 标注）
-  - `train_onset_detector.py` — 训练 onset detector
-  - `train_intervention_policy.py` — PPO 干预策略
-  - `eval_chi.py` — PHI 在线评估（含基线对比）
-  - `run_trace_generation.sh` — 轨迹生成封装
-  - `gpu_utils.sh` — GPU 分配工具
+  - `collect_traces.py` — 收集轨迹 + hidden states + claim-level NLI 标注
+  - `extract_hidden_states.py` — 从已有 JSONL 抽取 hidden states
+  - `train_onset_detector.py` — 训练 onset detector（单层探针 + 多层集成）
+  - `train_intervention_policy.py` — 离线 PPO 干预策略（MLP, 5D→5 actions）
+  - `train_policy_online.py` — 在线 PPO 策略精炼（真实 rollout）
+  - `eval_chi.py` — PHI 全面评估（含 6 种 baseline 对比）
+  - `analyze_offline_online_correlation.py` — 离线/在线奖励相关性分析
+  - `run_ablations.py` — 消融配置矩阵生成
+  - `gpu_utils.sh` — GPU 检测 + batch size 自动缩放
 - `src/` — 核心模块
   - `onset_detector.py` — 线性探针 + 多层集成检测器
   - `intervention_actions.py` — 5 类干预动作 + 执行器
-  - `claim_labeler.py` — Claim-level NLI 幻觉标注
-  - `factuality_eval.py` — Claim-level 事实性评估 + 置信区间
+  - `claim_labeler.py` — Claim 提取 + NLI 幻觉标注
+  - `factuality_eval.py` — 多评判器事实性评估 + bootstrap CI
   - `baselines.py` — DoLa, ITI, SelfCheckGPT 实现
   - `detector_calibration.py` — AUPRC, ECE, lead-time 校准
   - `completeness_eval.py` — 完整性、有用性、弃权率评估
+  - `budget_eval.py` — 预算匹配 Pareto 评估
+  - `rule_policies.py` — 规则策略 baseline（用于消融）
 - `configs/trace_config.yaml` — 实验配置
-- `results/` — 实验输出
-- `refine-logs/` — ARIS 研究细化历史
+- `tests/test_trace_hallu.py` — 单元测试
 
 ## Common commands
 
@@ -61,10 +64,11 @@ FORCE_RERUN=1 bash run.sh
 |-------|------|
 | 1 | 收集/抽取 hidden-state 轨迹（claim-level NLI 标注） |
 | 2 | 训练 onset detector（单层探针 + 多层集成） |
-| 3 | PPO 干预策略训练 |
-| 4 | 在线评估（PHI vs DoLa, ITI, SelfCheckGPT 等） |
-| 5 | 消融实验（阈值 + 单层 detector + 预算分析） |
-| 6 | 汇总 + 统计检验 |
+| 3 | 离线 PPO 干预策略训练（MLP, 5D state → 5 actions） |
+| 3b | 在线 PPO 策略精炼（真实 LLM rollout + NLI 奖励） |
+| 4 | 全面评估（PHI vs DoLa, ITI, SelfCheckGPT 等） |
+| 5 | 消融实验（阈值 sweep + 单层 detector + 预算分析） |
+| 6 | 汇总 + bootstrap CI + 显著性检验 |
 
 ## Data and outputs
 
