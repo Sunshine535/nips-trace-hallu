@@ -93,7 +93,7 @@ PHI operates in three phases:
 | 1 | Trace Collection | Collect hidden-state traces with claim-level NLI labels on TruthfulQA, HaluEval, FaithDial | ~48 hrs |
 | 2 | Onset Detector | Train per-layer probes + multi-layer ensemble with calibration | ~8 hrs |
 | 3 | Intervention Policy | Train PPO policy with 4 graduated actions | ~24 hrs |
-| 4 | Online Evaluation | Full evaluation: PHI vs DoLa, ITI, SelfCheckGPT, ablations | ~12 hrs |
+| 4 | Online Evaluation | Full evaluation: PHI vs DoLa, ITI, SelfCheckGPT + detector-oracle ablation | ~12 hrs |
 | 5 | Ablation Studies | Threshold sweep + per-layer comparison + budget analysis | ~8 hrs |
 | 6 | Summary | Aggregate results, bootstrap CIs, significance tests | < 1 hr |
 
@@ -104,7 +104,7 @@ PHI operates in three phases:
 - **Helpfulness**: Combined factuality × completeness score
 - **Detector**: AUPRC, ECE, onset lead-time, false positive burden
 - **Statistics**: 3 seeds, bootstrap 95% CIs, paired bootstrap significance tests
-- **Baselines**: No intervention, Always truncate, Oracle, DoLa, ITI, SelfCheckGPT
+- **Baselines**: No intervention, Always truncate, Detector-oracle (trained detector, not ground-truth), DoLa, ITI, SelfCheckGPT
 
 ## Timeline & GPU Hours
 

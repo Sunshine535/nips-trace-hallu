@@ -5,7 +5,13 @@ Full CHI (Causal Hallucination Intervention) system evaluation.
 End-to-end pipeline: detect onset → select intervention → continue/restart.
 Datasets: TruthfulQA, HaluEval, FaithDial.
 Metrics: factuality score, fluency (perplexity), avg intervention count, latency overhead.
-Compare: no intervention, always truncate, oracle detector, CHI (ours).
+Compare: no intervention, always truncate, detector-oracle (trained detector, NOT
+ground-truth labels), DoLa, ITI, SelfCheckGPT, CHI (ours).
+
+NOTE on "detector_oracle" baseline: this uses our *trained* onset detector with a
+fixed backtrack action.  It is NOT a true ground-truth oracle — it upper-bounds what
+a perfect *policy* could achieve given the current detector, but detection errors
+still propagate.  The name is kept for backward compatibility with prior runs.
 """
 
 import argparse
@@ -62,9 +68,10 @@ def parse_args():
     parser.add_argument("--seeds", type=int, nargs="+", default=None,
                         help="Multiple seeds for replicated evaluation (e.g. 42 137 2024)")
     parser.add_argument("--baselines", type=str, nargs="+",
-                        default=["no_intervention", "always_truncate", "oracle_detector",
-                                 "dola", "selfcheckgpt"],
-                        help="Baselines to evaluate")
+                        default=["no_intervention", "always_truncate", "detector_oracle",
+                                 "dola", "iti", "selfcheckgpt"],
+                        help="Baselines to evaluate (detector_oracle = trained detector "
+                             "with fixed backtrack, NOT ground-truth labels)")
     parser.add_argument("--use_claim_eval", action="store_true", default=True,
                         help="Use claim-level NLI evaluation instead of string matching")
     parser.add_argument("--dola_premature_layer", type=int, default=16)
@@ -269,7 +276,10 @@ def evaluate_no_intervention(
         )
 
         latency = time.time() - start_time
-        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        factuality = check_factuality(
+            text, sample["correct_answers"], sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
@@ -290,6 +300,7 @@ def evaluate_always_truncate(
     results = []
     for sample in tqdm(samples, desc="Always truncate"):
         prompt = f"Question: {sample['question']}\n\nAnswer:"
+        prompt_len = tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1]
         start_time = time.time()
 
         text, onset, gen_ids, confidence, gen_len = generate_with_onset_detection(
@@ -299,13 +310,18 @@ def evaluate_always_truncate(
         )
 
         n_interventions = 0
+        token_count = gen_len
         if onset > 0:
             result = executor.execute(Action.TRUNCATE, gen_ids, onset)
-            text = tokenizer.decode(result["new_ids"][0], skip_special_tokens=True)
+            text = tokenizer.decode(result["new_ids"][0, prompt_len:], skip_special_tokens=True)
+            token_count = max(0, result["new_ids"].shape[1] - prompt_len)
             n_interventions = 1
 
         latency = time.time() - start_time
-        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        factuality = check_factuality(
+            text, sample["correct_answers"], sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
@@ -314,18 +330,26 @@ def evaluate_always_truncate(
             "interventions": n_interventions,
             "latency": latency,
             "text": text,
-            "tokens": len(text.split()),
+            "tokens": token_count,
         })
     return results
 
 
-def evaluate_oracle(
+def evaluate_detector_oracle(
     model, tokenizer, detector, executor, samples, layer_indices, args,
 ):
-    """Oracle: always backtrack at true hallucination onset."""
+    """
+    Detector-oracle baseline: always backtrack when the *trained* onset detector fires.
+
+    IMPORTANT: This is NOT a ground-truth oracle.  Detection errors (false positives
+    and false negatives) still propagate.  This baseline upper-bounds what a perfect
+    *policy* could achieve given the current detector's accuracy, but does NOT
+    represent a perfect-detection scenario.
+    """
     results = []
-    for sample in tqdm(samples, desc="Oracle detector"):
+    for sample in tqdm(samples, desc="Detector oracle"):
         prompt = f"Question: {sample['question']}\n\nAnswer:"
+        prompt_len = tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1]
         start_time = time.time()
 
         text, onset, gen_ids, confidence, gen_len = generate_with_onset_detection(
@@ -335,13 +359,18 @@ def evaluate_oracle(
         )
 
         n_interventions = 0
+        token_count = gen_len
         if onset > 0:
             result = executor.execute(Action.BACKTRACK, gen_ids, onset)
-            text = tokenizer.decode(result["new_ids"][0], skip_special_tokens=True)
+            text = tokenizer.decode(result["new_ids"][0, prompt_len:], skip_special_tokens=True)
+            token_count = max(0, result["new_ids"].shape[1] - prompt_len)
             n_interventions = 1
 
         latency = time.time() - start_time
-        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        factuality = check_factuality(
+            text, sample["correct_answers"], sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
@@ -350,7 +379,7 @@ def evaluate_oracle(
             "interventions": n_interventions,
             "latency": latency,
             "text": text,
-            "tokens": len(text.split()),
+            "tokens": token_count,
         })
     return results
 
@@ -365,6 +394,7 @@ def evaluate_chi(
     for sample in tqdm(samples, desc="CHI (ours)"):
         prompt = f"Question: {sample['question']}\n\nAnswer:"
         prompt_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(model.device)
+        prompt_len = prompt_ids.shape[1]
         start_time = time.time()
 
         text, onset, gen_ids, confidence, gen_len = generate_with_onset_detection(
@@ -374,6 +404,7 @@ def evaluate_chi(
         )
 
         n_interventions = 0
+        token_count = gen_len
         if onset > 0:
             action = get_policy_action(
                 policy, confidence, gen_len, sample["question"], onset, gen_ids.shape[1],
@@ -384,10 +415,14 @@ def evaluate_chi(
             result = executor.execute(
                 action, gen_ids, onset, original_prompt_ids=prompt_ids,
             )
-            text = tokenizer.decode(result["new_ids"][0], skip_special_tokens=True)
+            text = tokenizer.decode(result["new_ids"][0, prompt_len:], skip_special_tokens=True)
+            token_count = max(0, result["new_ids"].shape[1] - prompt_len)
 
         latency = time.time() - start_time
-        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        factuality = check_factuality(
+            text, sample["correct_answers"], sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
@@ -396,7 +431,7 @@ def evaluate_chi(
             "interventions": n_interventions,
             "latency": latency,
             "text": text,
-            "tokens": len(text.split()),
+            "tokens": token_count,
         })
 
     return results, action_counts
@@ -454,7 +489,48 @@ def evaluate_selfcheck_baseline(model, tokenizer, samples, args):
             "latency": latency,
             "consistency": out.get("consistency_score", 0),
             "text": out["text"],
-            "tokens": len(out["text"].split()),
+            "tokens": out.get("num_tokens", len(tokenizer.encode(out["text"]))),
+        })
+    return results
+
+
+def evaluate_iti_baseline(model, tokenizer, samples, args):
+    """ITI: Inference-Time Intervention (Li et al., 2023) baseline."""
+    from src.baselines import ITIDecoder
+    iti = ITIDecoder(model, tokenizer, alpha=args.iti_alpha)
+
+    truthful_texts = []
+    hallucinated_texts = []
+    for s in samples[:50]:
+        if s.get("correct_answers"):
+            truthful_texts.append(s["correct_answers"][0])
+        if s.get("incorrect_answers"):
+            hallucinated_texts.append(s["incorrect_answers"][0])
+
+    if truthful_texts and hallucinated_texts:
+        iti.compute_directions(truthful_texts, hallucinated_texts)
+    else:
+        logger.warning("ITI: insufficient paired examples; running without learned directions")
+
+    results = []
+    for sample in tqdm(samples, desc="ITI"):
+        prompt = f"Question: {sample['question']}\n\nAnswer:"
+        start_time = time.time()
+        out = iti.generate(prompt, max_new_tokens=args.max_new_tokens)
+        latency = time.time() - start_time
+        factuality = check_factuality(
+            out["text"], sample["correct_answers"],
+            sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
+        ppl = compute_perplexity(model, tokenizer, out["text"]) if out["text"].strip() else float("inf")
+        results.append({
+            "factuality": factuality,
+            "perplexity": min(ppl, 1000.0),
+            "interventions": 0,
+            "latency": latency,
+            "text": out["text"],
+            "tokens": out.get("num_tokens", len(tokenizer.encode(out["text"]))),
         })
     return results
 
@@ -469,6 +545,7 @@ def evaluate_rule_policy(
     for sample in tqdm(samples, desc=f"Rule: {policy_name}"):
         prompt = f"Question: {sample['question']}\n\nAnswer:"
         prompt_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(model.device)
+        prompt_len = prompt_ids.shape[1]
         start_time = time.time()
 
         text, onset, gen_ids, confidence, gen_len = generate_with_onset_detection(
@@ -478,6 +555,7 @@ def evaluate_rule_policy(
         )
 
         n_interventions = 0
+        token_count = gen_len
         if onset > 0:
             action = rule_policy.select_action(confidence=confidence, threshold=args.threshold)
             action_counts[action.name] += 1
@@ -485,10 +563,14 @@ def evaluate_rule_policy(
 
             if action != Action.CONTINUE:
                 result = executor.execute(action, gen_ids, onset, original_prompt_ids=prompt_ids)
-                text = tokenizer.decode(result["new_ids"][0], skip_special_tokens=True)
+                text = tokenizer.decode(result["new_ids"][0, prompt_len:], skip_special_tokens=True)
+                token_count = max(0, result["new_ids"].shape[1] - prompt_len)
 
         latency = time.time() - start_time
-        factuality = check_factuality(text, sample["correct_answers"], sample.get("incorrect_answers", []))
+        factuality = check_factuality(
+            text, sample["correct_answers"], sample.get("incorrect_answers", []),
+            use_claim_level=args.use_claim_eval,
+        )
         ppl = compute_perplexity(model, tokenizer, text) if text.strip() else float("inf")
 
         results.append({
@@ -497,7 +579,7 @@ def evaluate_rule_policy(
             "interventions": n_interventions,
             "latency": latency,
             "text": text,
-            "tokens": len(text.split()),
+            "tokens": token_count,
         })
 
     return results, action_counts
@@ -577,9 +659,9 @@ def run_single_seed(model, tokenizer, detector, executor, policy, args, samples,
             model, tokenizer, detector, executor, samples, args.layer_indices, args,
         )
 
-    if "oracle_detector" in args.baselines:
-        logger.info("[baseline] Oracle detector")
-        methods["oracle_detector"] = evaluate_oracle(
+    if "detector_oracle" in args.baselines:
+        logger.info("[baseline] Detector oracle")
+        methods["detector_oracle"] = evaluate_detector_oracle(
             model, tokenizer, detector, executor, samples, args.layer_indices, args,
         )
 
@@ -590,6 +672,10 @@ def run_single_seed(model, tokenizer, detector, executor, policy, args, samples,
     if "selfcheckgpt" in args.baselines:
         logger.info("[baseline] SelfCheckGPT")
         methods["selfcheckgpt"] = evaluate_selfcheck_baseline(model, tokenizer, samples, args)
+
+    if "iti" in args.baselines:
+        logger.info("[baseline] ITI")
+        methods["iti"] = evaluate_iti_baseline(model, tokenizer, samples, args)
 
     if "rule_cascade" in args.baselines:
         logger.info("[baseline] Rule: threshold cascade")

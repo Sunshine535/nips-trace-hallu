@@ -21,16 +21,20 @@ auto_setup
 PROJ_DIR_ROOT="$(dirname "$SCRIPT_DIR")"
 if [ -f "$PROJ_DIR_ROOT/.venv/bin/activate" ]; then
     source "$PROJ_DIR_ROOT/.venv/bin/activate"
+elif command -v conda &>/dev/null && conda env list 2>/dev/null | grep -q "^nips-trace-hallu "; then
+    eval "$(conda shell.bash hook 2>/dev/null)"
+    conda activate nips-trace-hallu
 fi
 export PATH="$HOME/.local/bin:$PATH"
-
-TORCHRUN=$(get_torchrun_cmd)
 
 PHASE_MARKER_DIR="$PROJ_DIR_ROOT/results/.phase_markers"
 mkdir -p "$PHASE_MARKER_DIR"
 FORCE_RERUN="${FORCE_RERUN:-0}"
 
-phase_done() { touch "$PHASE_MARKER_DIR/phase_${1}.done"; echo "[PHASE $1] Completed at $(date)"; }
+phase_done() {
+    touch "$PHASE_MARKER_DIR/phase_${1}.done"
+    echo "[PHASE $1] Completed at $(date)"
+}
 is_phase_done() {
     [[ "$FORCE_RERUN" == "1" ]] && return 1
     [[ -f "$PHASE_MARKER_DIR/phase_${1}.done" ]] && echo "[PHASE $1] Already completed. Skipping. (FORCE_RERUN=1 to override)" && return 0
@@ -127,6 +131,11 @@ with open(os.path.join(traces_dir, 'collection_stats.json'), 'w') as f:
 print(json.dumps(stats, indent=2))
 "
 fi
+
+if [ ! -f "${TRACES_DIR}/collection_stats.json" ]; then
+    log "ERROR: Stage 1 failed — collection_stats.json not found"
+    exit 1
+fi
 phase_done 1
 fi
 
@@ -154,6 +163,11 @@ else
         --resume_from_checkpoint auto \
         2>&1 | tee "${LOG_DIR}/stage2_train_detector.log"
 fi
+
+if [ ! -f "${DETECTOR_DIR}/detector_summary.json" ]; then
+    log "ERROR: Stage 2 failed — detector_summary.json not found"
+    exit 1
+fi
 phase_done 2
 fi
 
@@ -180,7 +194,39 @@ else
         --resume_from_checkpoint auto \
         2>&1 | tee "${LOG_DIR}/stage3_train_policy.log"
 fi
+
+if [ ! -f "${POLICY_DIR}/training_summary.json" ]; then
+    log "ERROR: Stage 3 failed — training_summary.json not found"
+    exit 1
+fi
 phase_done 3
+fi
+
+# ============================================================================
+# Stage 3b: Online Policy Fine-tuning
+# Refines the offline policy with real LLM rollouts.
+# ============================================================================
+if ! is_phase_done 3b; then
+log "========================================="
+log "[Stage 3b] Online policy fine-tuning"
+log "========================================="
+
+ONLINE_DIR="${PROJECT_DIR}/checkpoints/online_policy"
+mkdir -p "$ONLINE_DIR"
+
+python "${SCRIPT_DIR}/train_policy_online.py" \
+    --model_name "$MODEL_NAME" \
+    --detector_path "${DETECTOR_DIR}/multi_layer_detector.pt" \
+    --detector_type multi_layer \
+    --layer_indices $LAYER_INDICES \
+    --hidden_size 4096 \
+    --output_dir "$ONLINE_DIR" \
+    --dataset truthfulqa \
+    --max_samples 200 \
+    --num_epochs 20 \
+    --pretrained_policy "${POLICY_DIR}/best_policy.pt" \
+    2>&1 | tee "${LOG_DIR}/stage3b_online_policy.log"
+phase_done 3b
 fi
 
 # ============================================================================
@@ -193,6 +239,12 @@ log "========================================="
 
 DETECTOR_PATH="${DETECTOR_DIR}/multi_layer_detector.pt"
 POLICY_PATH="${POLICY_DIR}/best_policy.pt"
+
+ONLINE_POLICY="${PROJECT_DIR}/checkpoints/online_policy/best_policy.pt"
+if [ -f "$ONLINE_POLICY" ]; then
+    POLICY_PATH="$ONLINE_POLICY"
+    log "Using online-refined policy: $ONLINE_POLICY"
+fi
 
 if [ ! -f "$DETECTOR_PATH" ]; then
     BEST_LAYER=$(python -c "
@@ -220,7 +272,13 @@ python "${SCRIPT_DIR}/eval_chi.py" \
     --output_dir "$RESULTS_DIR" \
     --num_samples 500 \
     --max_new_tokens 512 \
+    --baselines no_intervention always_truncate detector_oracle dola iti selfcheckgpt \
     2>&1 | tee "${LOG_DIR}/stage4_eval_chi.log"
+
+if [ ! -f "${RESULTS_DIR}/chi_evaluation.json" ]; then
+    log "ERROR: Stage 4 failed — chi_evaluation.json not found"
+    exit 1
+fi
 phase_done 4
 fi
 

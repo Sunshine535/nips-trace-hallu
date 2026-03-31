@@ -65,7 +65,7 @@ labeling:
 baselines:
   - "no_intervention"
   - "always_truncate"
-  - "oracle_detector"
+  - "detector_oracle"
   - "dola"
   - "iti"
   - "selfcheckgpt"

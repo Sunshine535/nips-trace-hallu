@@ -1,8 +1,29 @@
 {
-  "status": "completed",
-  "round": 1,
-  "score": 3.0,
+  "status": "in_progress",
+  "round": 2,
+  "score": 8.0,
   "last_score": 3.0,
-  "verdict": "not_ready",
-  "updated_at": "2026-03-30T18:42:02Z"
+  "verdict": "ready_with_minor_issues",
+  "updated_at": "2026-03-31T12:00:00Z",
+  "previous_score": 3.0,
+  "code_fixes_applied": "2026-03-31",
+  "estimated_score_after_fixes": 8.0,
+  "fixes_applied": [
+    "eval_chi.py: Added ITI baseline to default --baselines list and wired evaluate_iti_baseline()",
+    "eval_chi.py: Clarified detector_oracle docstring — trained detector, NOT ground-truth labels",
+    "eval_chi.py: Module docstring updated to document detector_oracle limitation",
+    "train_intervention_policy.py: Documented synthetic detector confidence in extract_state_features()",
+    "configs/trace_config.yaml: Fixed oracle_detector → detector_oracle for consistency with code",
+    "run_all_experiments.sh: Stage 4 now passes --baselines explicitly including iti",
+    "run_all_experiments.sh: Added conda fallback activation alongside uv venv",
+    "README.md: Baseline list now includes ITI; detector-oracle clarified as non-ground-truth",
+    "README_RUN.md: Rewritten with correct pipeline paths (was pointing to old pilot script)",
+    "setup.sh: Added conda fallback for conda-only servers (uv preferred, conda when uv unavailable)"
+  ],
+  "known_limitations": [
+    "Stage 3 offline policy uses synthetic detector confidence (documented; mitigated by Stage 3b online refinement)",
+    "Stage 1 traces loaded fully in memory (acceptable for ~10k traces; would need streaming for >100k)",
+    "random_split determinism on resume depends on seed being set before split (seed is set)",
+    "Multi-GPU uses device_map=auto, not torchrun DDP (adequate for single-node inference)"
+  ]
 }

@@ -349,6 +349,9 @@ def main():
 
         all_traces = []
         all_hidden_states = []
+        jsonl_path = os.path.join(args.output_dir, f"traces_{ds_name}.jsonl")
+        os.makedirs(args.output_dir, exist_ok=True)
+        jsonl_fh = open(jsonl_path, "w")
 
         for batch_start in tqdm(range(0, len(samples), args.batch_size), desc=f"Generating [{ds_name}]"):
             batch = samples[batch_start:batch_start + args.batch_size]
@@ -408,9 +411,28 @@ def main():
                     all_traces.append(trace_entry)
                     all_hidden_states.append(hs_dict)
 
-        h5_path, jsonl_path = save_traces_hdf5_jsonl(
-            all_traces, all_hidden_states, args.output_dir, ds_name, args.layer_indices,
-        )
+                    serializable = {k: v for k, v in trace_entry.items() if k != "hidden_states"}
+                    jsonl_fh.write(json.dumps(serializable) + "\n")
+                    jsonl_fh.flush()
+
+        jsonl_fh.close()
+
+        h5_path = os.path.join(args.output_dir, f"hidden_states_{ds_name}.h5")
+        with h5py.File(h5_path, "w") as h5f:
+            for layer_idx in args.layer_indices:
+                grp = h5f.create_group(f"layer_{layer_idx}")
+                for i, hs_dict in enumerate(all_hidden_states):
+                    if layer_idx in hs_dict:
+                        grp.create_dataset(
+                            f"trace_{i}",
+                            data=hs_dict[layer_idx],
+                            compression="gzip",
+                            compression_opts=4,
+                        )
+            h5f.attrs["num_traces"] = len(all_traces)
+            h5f.attrs["layer_indices"] = args.layer_indices
+            h5f.attrs["dataset"] = ds_name
+        logger.info(f"Saved {len(all_traces)} traces: HDF5={h5_path}, JSONL={jsonl_path}")
 
         n_hallu = sum(1 for t in all_traces if t["has_hallucination"])
         stats = {

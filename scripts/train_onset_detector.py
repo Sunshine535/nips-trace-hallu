@@ -213,7 +213,8 @@ def train_single_layer(
 
     train_size = int(len(dataset) * config["train_ratio"])
     val_size = len(dataset) - train_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+    split_gen = torch.Generator().manual_seed(42)
+    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=split_gen)
 
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=collate_traces,
@@ -326,7 +327,8 @@ def train_multi_layer_ensemble(
 
     train_size = int(len(dataset) * config["train_ratio"])
     val_size = len(dataset) - train_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+    split_gen = torch.Generator().manual_seed(42)
+    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=split_gen)
 
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=collate_traces,
@@ -434,10 +436,7 @@ def main():
     torch.manual_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
 
     logger.info(f"Loading traces from {args.traces_dir}")

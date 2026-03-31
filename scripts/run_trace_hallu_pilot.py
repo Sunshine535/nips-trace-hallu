@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 
 NUM_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?(?:/\d+)?")
-DEFAULT_INPUT = "methods/01_adathink/results/per_sample_Qwen3_8B_20260227_140410.csv"
+DEFAULT_INPUT = "results/per_sample_Qwen3_8B_20260227_140410.csv"
 
 
 def to_int(v):
@@ -94,7 +94,7 @@ def fixed_metrics(rows, budget, lambda_cost):
 def main():
     ap = argparse.ArgumentParser(description="TRACE-Hallu pilot from AdaThink per-sample traces")
     ap.add_argument("--input_csv", type=str, default=DEFAULT_INPUT)
-    ap.add_argument("--output_dir", type=str, default="methods/02_trace_hallu/results")
+    ap.add_argument("--output_dir", type=str, default="results")
     ap.add_argument("--lambda_cost", type=float, default=0.15)
     args = ap.parse_args()
 

@@ -138,7 +138,14 @@ ACTION_COSTS = {
 
 
 def extract_state_features(trace: dict, detector_confidence: float = None) -> np.ndarray:
-    """Extract state features from a trace for the policy."""
+    """
+    Extract state features from a trace for the policy.
+
+    When ``detector_confidence`` is None (offline training), we synthesize it
+    from the NLI hallucination-density label with additive noise.  This is an
+    intentional design choice: the offline policy is pre-trained on noisy proxy
+    signals and then refined online (Stage 3b) with real detector outputs.
+    """
     tokens = trace.get("tokens", [])
     hallu_labels = trace.get("hallu_labels", [])
     onset_pos = trace.get("onset_position", -1)
@@ -158,7 +165,7 @@ def extract_state_features(trace: dict, detector_confidence: float = None) -> np
         hallu_density = 0.0
 
     if detector_confidence is None:
-        detector_confidence = hallu_density * 0.8 + np.random.uniform(0, 0.2)
+        detector_confidence = hallu_density * 0.8 + np.random.uniform(0, 0.2)  # synthetic proxy
 
     return np.array([
         detector_confidence,
@@ -309,10 +316,7 @@ def main():
     np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
 
     traces = []
